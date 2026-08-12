@@ -21,4 +21,8 @@ dist-ssr
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?
+# Python / YOLO training cache
+*.pt
+Tarjetas-Juego-UCSE-YOLOv8n-1/
+runs/
+exportar.py

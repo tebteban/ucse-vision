@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>UCSE Vision — Captura de Entrenamiento</title>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0e24;
+      --card-bg: rgba(10, 14, 36, 0.95);
+      --cyan: #00fff5;
+      --magenta: #ff2d75;
+      --yellow: #ffe53b;
+      --green: #39ff14;
+      --text: #e8f0ff;
+      --muted: #8899bb;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      text-align: center;
+      padding: 1.5rem;
+      border-bottom: 2px solid var(--cyan);
+    }
+
+    header h1 {
+      font-family: 'Press Start 2P', monospace;
+      font-size: 1rem;
+      color: var(--cyan);
+      text-shadow: 0 0 10px var(--cyan);
+    }
+
+    header p { color: var(--muted); margin-top: 0.5rem; font-size: 0.85rem; }
+
+    .layout {
+      display: flex;
+      flex: 1;
+      gap: 1.5rem;
+      padding: 1.5rem;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .camera-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .camera-container {
+      position: relative;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 3px solid var(--cyan);
+      box-shadow: 0 0 20px rgba(0, 255, 245, 0.2);
+    }
+
+    video {
+      width: 100%;
+      display: block;
+    }
+
+    .camera-container canvas {
+      display: none;
+    }
+
+    .flash-overlay {
+      position: absolute;
+      inset: 0;
+      background: white;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.1s;
+    }
+
+    .flash-overlay.active {
+      opacity: 0.7;
+    }
+
+    .controls {
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+    }
+
+    .class-selector {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+    }
+
+    .class-selector label {
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .class-selector select {
+      background: var(--card-bg);
+      color: var(--text);
+      border: 2px solid var(--cyan);
+      border-radius: 8px;
+      padding: 0.7rem 1rem;
+      font-size: 1rem;
+      font-family: 'Inter', sans-serif;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .class-selector select:focus {
+      border-color: var(--magenta);
+      box-shadow: 0 0 10px rgba(255, 45, 117, 0.3);
+    }
+
+    .capture-btn {
+      background: linear-gradient(135deg, var(--green), #00cc44);
+      color: #000;
+      border: none;
+      padding: 1rem 2rem;
+      border-radius: 12px;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 0.7rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+
+    .capture-btn:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 20px rgba(57, 255, 20, 0.5);
+    }
+
+    .capture-btn:active {
+      transform: scale(0.95);
+    }
+
+    .sidebar {
+      width: 320px;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      overflow-y: auto;
+      max-height: calc(100vh - 120px);
+    }
+
+    .stats-card {
+      background: var(--card-bg);
+      border: 2px solid var(--magenta);
+      border-radius: 12px;
+      padding: 1rem;
+    }
+
+    .stats-card h3 {
+      font-family: 'Press Start 2P', monospace;
+      font-size: 0.65rem;
+      color: var(--magenta);
+      margin-bottom: 0.8rem;
+    }
+
+    .total-captures {
+      text-align: center;
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--yellow);
+      text-shadow: 0 0 10px var(--yellow);
+    }
+
+    .total-label {
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 0.3rem;
+    }
+
+    .class-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+      margin-top: 0.8rem;
+    }
+
+    .class-count {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.4rem 0.6rem;
+      background: rgba(0,0,0,0.4);
+      border-radius: 6px;
+      font-size: 0.75rem;
+      border-left: 3px solid var(--muted);
+    }
+
+    .class-count.good { border-color: var(--green); }
+    .class-count.ok { border-color: var(--yellow); }
+    .class-count span:last-child { font-weight: 700; color: var(--cyan); }
+
+    .guide-card {
+      background: var(--card-bg);
+      border: 2px solid var(--cyan);
+      border-radius: 12px;
+      padding: 1rem;
+    }
+
+    .guide-card h3 {
+      font-family: 'Press Start 2P', monospace;
+      font-size: 0.6rem;
+      color: var(--cyan);
+      margin-bottom: 0.8rem;
+    }
+
+    .checklist {
+      list-style: none;
+    }
+
+    .checklist li {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0;
+      font-size: 0.8rem;
+      color: var(--muted);
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+
+    .checklist li::before {
+      content: '▸';
+      color: var(--cyan);
+      font-weight: bold;
+    }
+
+    .recent-captures {
+      display: flex;
+      gap: 0.5rem;
+      overflow-x: auto;
+      padding: 0.5rem 0;
+    }
+
+    .recent-captures img {
+      width: 80px;
+      height: 80px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 2px solid var(--muted);
+    }
+
+    .recent-captures img:first-child {
+      border-color: var(--green);
+      box-shadow: 0 0 8px rgba(57, 255, 20, 0.3);
+    }
+
+    .shortcut-hint {
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--muted);
+      padding: 0.5rem;
+    }
+
+    .shortcut-hint kbd {
+      background: var(--card-bg);
+      border: 1px solid var(--cyan);
+      border-radius: 4px;
+      padding: 0.15rem 0.5rem;
+      font-family: monospace;
+      color: var(--cyan);
+    }
+
+    @media (max-width: 900px) {
+      .layout { flex-direction: column; }
+      .sidebar { width: 100%; max-height: none; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>📸 CAPTURA DE ENTRENAMIENTO</h1>
+  <p>Herramienta para capturar imágenes de entrenamiento desde la webcam</p>
+</header>
+
+<div class="layout">
+  <div class="camera-section">
+    <div class="camera-container">
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="canvas"></canvas>
+      <div class="flash-overlay" id="flash"></div>
+    </div>
+
+    <div class="controls">
+      <div class="class-selector">
+        <label>Clase activa</label>
+        <select id="classSelect"></select>
+      </div>
+      <button class="capture-btn" id="captureBtn" onclick="capture()">
+        📸 CAPTURAR
+      </button>
+    </div>
+
+    <div class="shortcut-hint">
+      Presioná <kbd>Espacio</kbd> o <kbd>Enter</kbd> para capturar rápido
+    </div>
+
+    <div class="recent-captures" id="recentCaptures"></div>
+  </div>
+
+  <div class="sidebar">
+    <div class="stats-card">
+      <h3>📊 PROGRESO</h3>
+      <div class="total-captures" id="totalCount">0</div>
+      <div class="total-label">CAPTURAS TOTALES</div>
+      <div class="class-grid" id="classGrid"></div>
+    </div>
+
+    <div class="guide-card">
+      <h3>📋 CHECKLIST POR TARJETA</h3>
+      <ul class="checklist">
+        <li>Cerca (~20cm) — frontal</li>
+        <li>Cerca (~20cm) — inclinada 30°</li>
+        <li>Media (~50cm) — frontal</li>
+        <li>Media (~50cm) — inclinada 30°</li>
+        <li>Media (~50cm) — inclinada 45°</li>
+        <li>Media (~50cm) — rotada leve</li>
+        <li>Lejos (~1m) — frontal</li>
+        <li>Lejos (~1m) — inclinada</li>
+        <li>Sostenida con mano izq</li>
+        <li>Sostenida con mano der</li>
+        <li>Sobre mesa / superficie</li>
+        <li>Luz natural (ventana)</li>
+        <li>Luz artificial (techo)</li>
+        <li>Luz baja / sombra parcial</li>
+        <li>Parcialmente tapada (~20%)</li>
+        <li>Con fondo variado</li>
+        <li>Ligeramente movida (blur)</li>
+        <li>Dos tarjetas visibles</li>
+        <li>Extra: ángulo creativo</li>
+        <li>Extra: distancia media-lejana</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+  const CLASES = [
+    'mouse', 'teclado', 'monitor', 'gabinete',
+    'memoria_ram', 'procesador', 'joystick', 'auriculares',
+    'impresora', 'pendrive', 'disco_duro', 'webcam',
+    'router', 'microfono', 'parlante', 'cable_usb'
+  ];
+
+  const counts = {};
+  CLASES.forEach(c => counts[c] = 0);
+
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const classSelect = document.getElementById('classSelect');
+  const flash = document.getElementById('flash');
+  const totalCountEl = document.getElementById('totalCount');
+  const classGrid = document.getElementById('classGrid');
+  const recentCaptures = document.getElementById('recentCaptures');
+
+  // Populate selector
+  CLASES.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c.replace(/_/g, ' ').toUpperCase();
+    classSelect.appendChild(opt);
+  });
+
+  // Start webcam
+  async function initCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'user' }
+      });
+      video.srcObject = stream;
+      video.addEventListener('loadedmetadata', () => {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+      });
+    } catch (err) {
+      alert('No se pudo acceder a la cámara: ' + err.message);
+    }
+  }
+
+  function capture() {
+    const clase = classSelect.value;
+    const timestamp = Date.now();
+    const filename = `${clase}_${timestamp}.png`;
+
+    // Draw frame to canvas
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Flash effect
+    flash.classList.add('active');
+    setTimeout(() => flash.classList.remove('active'), 150);
+
+    // Download
+    canvas.toBlob(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      // Update count
+      counts[clase]++;
+      updateUI();
+
+      // Add to recent
+      const img = document.createElement('img');
+      img.src = canvas.toDataURL('image/png');
+      img.title = `${clase} #${counts[clase]}`;
+      recentCaptures.prepend(img);
+      if (recentCaptures.children.length > 10) {
+        recentCaptures.lastChild.remove();
+      }
+    }, 'image/png');
+  }
+
+  function updateUI() {
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    totalCountEl.textContent = total;
+
+    classGrid.innerHTML = '';
+    CLASES.forEach(c => {
+      const div = document.createElement('div');
+      const n = counts[c];
+      div.className = `class-count ${n >= 20 ? 'good' : n >= 10 ? 'ok' : ''}`;
+      div.innerHTML = `<span>${c.replace(/_/g, ' ')}</span><span>${n}</span>`;
+      classGrid.appendChild(div);
+    });
+  }
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'Enter') {
+      e.preventDefault();
+      capture();
+    }
+    // Arrow keys to change class
+    if (e.code === 'ArrowDown' || e.code === 'ArrowRight') {
+      e.preventDefault();
+      classSelect.selectedIndex = (classSelect.selectedIndex + 1) % CLASES.length;
+    }
+    if (e.code === 'ArrowUp' || e.code === 'ArrowLeft') {
+      e.preventDefault();
+      classSelect.selectedIndex = (classSelect.selectedIndex - 1 + CLASES.length) % CLASES.length;
+    }
+  });
+
+  updateUI();
+  initCamera();
+</script>
+
+</body>
+</html>

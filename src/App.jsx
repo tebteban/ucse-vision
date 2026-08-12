@@ -1,38 +1,52 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { ObjectDetector, FilesetResolver } from '@mediapipe/tasks-vision';
+import { loadYoloModel, detectYoloObjects } from './yoloDetector';
 
 const DICCIONARIO = {
-  'cell phone': 'Celular',
-  'cup': 'Taza',
-  'bottle': 'Botella',
-  'book': 'Libro',
-  'keyboard': 'Teclado',
-  'banana': 'Banana',
-  'scissors': 'Tijeras',
-  'spoon': 'Cuchara',
-  'fork': 'Tenedor'
+  'auriculares': 'Auriculares',
+  'cable_usb': 'Cable USB',
+  'disco_duro': 'Disco Duro',
+  'gabinete': 'Gabinete',
+  'impresora': 'Impresora',
+  'joystick': 'Joystick',
+  'memoria_ram': 'Memoria RAM',
+  'microfono': 'Micrófono',
+  'monitor': 'Monitor',
+  'mouse': 'Mouse',
+  'parlante': 'Parlante',
+  'pendrive': 'Pendrive',
+  'procesador': 'Procesador',
+  'router': 'Router',
+  'teclado': 'Teclado',
+  'webcam': 'Webcam'
 };
 
 const ICONOS_OBJETO = {
-  'cell phone': '📱',
-  'cup': '☕',
-  'bottle': '🧴',
-  'book': '📖',
-  'keyboard': '⌨️',
-  'banana': '🍌',
-  'scissors': '✂️',
-  'spoon': '🥄',
-  'fork': '🍴'
+  'auriculares': '🎧',
+  'cable_usb': '🔌',
+  'disco_duro': '💽',
+  'gabinete': '🖥️',
+  'impresora': '🖨️',
+  'joystick': '🎮',
+  'memoria_ram': '💾',
+  'microfono': '🎙️',
+  'monitor': '📺',
+  'mouse': '🖱️',
+  'parlante': '🔊',
+  'pendrive': '🏷️',
+  'procesador': '🔲',
+  'router': '📡',
+  'teclado': '⌨️',
+  'webcam': '📷'
 };
 
 const OBJETOS_BUSCADOS = Object.keys(DICCIONARIO);
 const TOTAL_OBJETOS_PARTIDA = 10;
-const FRAMES_PARA_VALIDAR = 30;
+const FRAMES_PARA_VALIDAR = 3; // Acierto instantáneo en 3 frames (~0.1s)
 const OPCIONES_TIEMPO = [15, 30, 60];
 const RANKING_KEY = 'ucse-vision-ranking';
 const LEGENDARY_EVERY = 5;
 const LEGENDARY_SECONDS = 10;
-const GITHUB_LINK = 'https://github.com/tu-usuario/expoucse-vision';
+const GITHUB_LINK = 'https://github.com/tebteban/ucse-vision';
 
 const formatScore = (score) => String(score).padStart(6, '0');
 
@@ -163,21 +177,11 @@ function App() {
   useEffect(() => {
     const loadModel = async () => {
       try {
-        const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-        );
-        const objectDetector = await ObjectDetector.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite`,
-            delegate: "GPU"
-          },
-          scoreThreshold: 0.3,
-          runningMode: "VIDEO"
-        });
-        setModel(objectDetector);
+        const loadedModel = await loadYoloModel('/models/best.onnx');
+        setModel(loadedModel);
         setLoading(false);
       } catch (error) {
-        console.error('Error al cargar el modelo MediaPipe:', error);
+        console.error('Error al cargar el modelo YOLOv8 ONNX:', error);
       }
     };
 
@@ -382,11 +386,7 @@ function App() {
     const multiplicador = comboActiveRef.current ? 2 : 1;
     const puntajeReal = puntosExtra * multiplicador;
 
-    setPuntos((prev) => {
-      const nuevoPuntaje = prev + puntajeReal;
-      guardarRanking(playerName || 'Jugador', nuevoPuntaje, sessionTime);
-      return nuevoPuntaje;
-    });
+    setPuntos((prev) => prev + puntajeReal);
 
     setStatusMessage(mensaje || (comboActiveRef.current ? '¡Racha x2! 🔥' : ''));
     setTimeLeft(timePerObject);
@@ -400,6 +400,37 @@ function App() {
   };
 
   const manejarAcierto = () => {
+    frameCountRef.current = 0;
+    setProgresoEscaneo(0);
+
+    // Si estábamos en modo legendario, completar y salir de modo legendario
+    if (legendaryModeRef.current) {
+      legendaryModeRef.current = false;
+      setLegendaryMode(false);
+      setLegendaryObject(null);
+      legendaryObjectRef.current = null;
+
+      const atendidosLeg = objectsAttemptedRef.current + 1;
+      objectsAttemptedRef.current = atendidosLeg;
+      setObjectsAttempted(atendidosLeg);
+
+      const encontradosLeg = objectsFoundRef.current + 1;
+      objectsFoundRef.current = encontradosLeg;
+      setObjectsFound(encontradosLeg);
+
+      playSuccessTone();
+
+      if (atendidosLeg >= TOTAL_OBJETOS_PARTIDA) {
+        setPuntos((prev) => prev + 500);
+        finalizarPartida(`¡Partida completa! Acertaste ${encontradosLeg}/${TOTAL_OBJETOS_PARTIDA} 🎉`);
+        return;
+      }
+
+      registrarRacha();
+      avanzarObjeto(500, '¡OBJETO LEGENDARIO ENCONTRADO! ✨ (+500 pts)');
+      return;
+    }
+
     const siguienteAtendidos = objectsAttemptedRef.current + 1;
     objectsAttemptedRef.current = siguienteAtendidos;
     setObjectsAttempted(siguienteAtendidos);
@@ -409,11 +440,7 @@ function App() {
     setObjectsFound(siguienteObjetosEncontrados);
 
     if (siguienteAtendidos >= TOTAL_OBJETOS_PARTIDA) {
-      setPuntos((prev) => {
-        const nuevoPuntaje = prev + 250;
-        guardarRanking(playerName || 'Jugador', nuevoPuntaje, sessionTime);
-        return nuevoPuntaje;
-      });
+      setPuntos((prev) => prev + 250);
       playSuccessTone();
       finalizarPartida(`¡Partida completa! Acertaste ${siguienteObjetosEncontrados}/${TOTAL_OBJETOS_PARTIDA} 🎉`);
       return;
@@ -428,14 +455,9 @@ function App() {
       setLegendaryObject(siguienteLegendario);
       legendaryModeRef.current = true;
       setLegendaryMode(true);
-      setStatusMessage(`¡Busca ${DICCIONARIO[siguienteLegendario]} legendario! ✨`);
+      setStatusMessage(`¡MODO LEGENDARIO! Busca ${DICCIONARIO[siguienteLegendario]} ✨`);
       setTimeLeft(LEGENDARY_SECONDS);
       setObjetoActual(siguienteLegendario);
-      setPuntos((prev) => {
-        const nuevoPuntaje = prev + 500;
-        guardarRanking(playerName || 'Jugador', nuevoPuntaje, sessionTime);
-        return nuevoPuntaje;
-      });
       playSuccessTone();
       return;
     }
@@ -552,73 +574,75 @@ function App() {
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    const startTimeMs = performance.now();
-    const detectionResult = model.detectForVideo(video, startTimeMs);
+
+    // Detectar tarjetas con YOLOv8 ONNX
+    const predictions = await detectYoloObjects(video, 0.40);
 
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     let mejorConfianza = 0;
     let encontroObjetivo = false;
+    let esSuperConfianza = false;
 
-    if (detectionResult && detectionResult.detections) {
-      detectionResult.detections.forEach((detection) => {
-        const category = detection.categories[0];
-        if (!category) return;
+    predictions.forEach((prediction) => {
+      const [x, y, width, height] = prediction.bbox;
+      const claseDetectada = prediction.class;
+      const certeza = Math.round(prediction.score * 100);
 
-        const claseDetectada = category.categoryName;
-        const certeza = Math.round(category.score * 100);
-        
-        const boundingBox = detection.boundingBox;
-        const x = boundingBox.originX;
-        const y = boundingBox.originY;
-        const width = boundingBox.width;
-        const height = boundingBox.height;
+      if (certeza > mejorConfianza) {
+        mejorConfianza = certeza;
+      }
 
-        if (certeza > mejorConfianza) {
-          mejorConfianza = certeza;
-        }
+      if (certeza > 40) {
+        const esObjetivoLegendario = legendaryModeRef.current && claseDetectada === legendaryObjectRef.current;
+        const esObjetivoNormal = !legendaryModeRef.current && claseDetectada === objetoActualRef.current;
+        const esObjetivo = esObjetivoLegendario || esObjetivoNormal;
 
-        if (certeza > 45) {
-          const esObjetivoLegendario = legendaryModeRef.current && claseDetectada === legendaryObjectRef.current;
-          const esObjetivoNormal = !legendaryModeRef.current && claseDetectada === objetoActualRef.current;
-          const esObjetivo = esObjetivoLegendario || esObjetivoNormal;
+        const nombreEspanol = DICCIONARIO[claseDetectada] || claseDetectada;
 
-          if (esObjetivo) {
-            encontroObjetivo = true;
-            playScanTone();
-
-            ctx.strokeStyle = '#10B981';
-            ctx.lineWidth = 6;
-            ctx.strokeRect(x, y, width, height);
-
-            ctx.fillStyle = 'rgba(16, 185, 129, 0.8)';
-            ctx.fillRect(x, y - 30, ctx.measureText(`${claseDetectada}`).width + 50, 30);
-
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font = 'bold 18px Arial';
-            ctx.fillText(`OBJETIVO (${certeza}%)`, x + 5, y - 10);
-          } else {
-            ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(x, y, width, height);
-
-            ctx.fillStyle = 'rgba(148, 163, 184, 0.5)';
-            ctx.font = '12px Arial';
-            ctx.fillText(claseDetectada, x, y > 15 ? y - 5 : 15);
+        if (esObjetivo) {
+          encontroObjetivo = true;
+          if (certeza >= 90) {
+            esSuperConfianza = true;
           }
+          playScanTone();
+
+          ctx.strokeStyle = '#10B981';
+          ctx.lineWidth = 6;
+          ctx.strokeRect(x, y, width, height);
+
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.8)';
+          ctx.fillRect(x, y - 30, ctx.measureText(`${nombreEspanol}`).width + 60, 30);
+
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = 'bold 18px Arial';
+          ctx.fillText(`${nombreEspanol.toUpperCase()} (${certeza}%)`, x + 5, y - 10);
+        } else {
+          ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x, y, width, height);
+
+          ctx.fillStyle = 'rgba(148, 163, 184, 0.5)';
+          ctx.font = '12px Arial';
+          ctx.fillText(nombreEspanol, x, y > 15 ? y - 5 : 15);
         }
-      });
-    }
+      }
+    });
 
     setIaConfidence(mejorConfianza);
 
     if (encontroObjetivo) {
-      frameCountRef.current += 1;
-      setProgresoEscaneo((frameCountRef.current / FRAMES_PARA_VALIDAR) * 100);
-
-      if (frameCountRef.current >= FRAMES_PARA_VALIDAR) {
+      if (esSuperConfianza) {
+        // Si la confianza es >= 90%, acierto directo e instantáneo
         manejarAcierto();
+      } else {
+        frameCountRef.current += 1;
+        setProgresoEscaneo((frameCountRef.current / FRAMES_PARA_VALIDAR) * 100);
+
+        if (frameCountRef.current >= FRAMES_PARA_VALIDAR) {
+          manejarAcierto();
+        }
       }
     } else {
       if (frameCountRef.current > 0) {
@@ -680,14 +704,7 @@ function App() {
 
             <div className="qr-card qr-card-final">
               <div className="qr-box" aria-label="QR del proyecto">
-                <svg viewBox="0 0 120 120" role="img" aria-label="Código QR del proyecto">
-                  <rect width="120" height="120" fill="#ffffff" />
-                  {[
-                    [0,0],[1,0],[2,0],[3,0],[4,0],[5,0],[6,0],[7,0],[8,0],[9,0],[10,0],[11,0],[12,0],[13,0],[14,0],[15,0],[0,1],[2,1],[4,1],[6,1],[8,1],[10,1],[12,1],[14,1],[15,1],[0,2],[1,2],[2,2],[3,2],[4,2],[6,2],[7,2],[8,2],[10,2],[12,2],[14,2],[15,2],[0,3],[2,3],[4,3],[5,3],[6,3],[7,3],[8,3],[10,3],[12,3],[14,3],[15,3],[0,4],[1,4],[2,4],[3,4],[4,4],[6,4],[8,4],[10,4],[12,4],[13,4],[14,4],[15,4],[0,5],[2,5],[3,5],[4,5],[6,5],[8,5],[9,5],[10,5],[12,5],[14,5],[15,5],[0,6],[2,6],[4,6],[6,6],[8,6],[9,6],[10,6],[12,6],[14,6],[15,6],[1,7],[3,7],[4,7],[6,7],[7,7],[8,7],[9,7],[10,7],[12,7],[14,7],[15,7],[0,8],[2,8],[4,8],[5,8],[6,8],[7,8],[8,8],[9,8],[10,8],[12,8],[14,8],[15,8],[0,9],[2,9],[4,9],[6,9],[7,9],[8,9],[9,9],[10,9],[12,9],[14,9],[15,9],[0,10],[1,10],[2,10],[3,10],[4,10],[6,10],[8,10],[10,10],[12,10],[13,10],[14,10],[15,10],[0,11],[2,11],[4,11],[5,11],[6,11],[8,11],[9,11],[10,11],[12,11],[14,11],[15,11],[0,12],[1,12],[2,12],[3,12],[4,12],[6,12],[7,12],[8,12],[9,12],[10,12],[12,12],[14,12],[15,12],[0,13],[2,13],[4,13],[5,13],[7,13],[8,13],[9,13],[10,13],[12,13],[14,13],[15,13],[0,14],[2,14],[3,14],[4,14],[5,14],[6,14],[7,14],[8,14],[9,14],[10,14],[12,14],[14,14],[15,14],[0,15],[1,15],[2,15],[3,15],[4,15],[5,15],[6,15],[8,15],[10,15],[12,15],[13,15],[14,15],[15,15]
-                  ].map(([x, y]) => (
-                    <rect key={`${x}-${y}`} x={x * 7 + 2} y={y * 7 + 2} width="5" height="5" fill="#111827" />
-                  ))}
-                </svg>
+                <img src="/qr-github.png" alt="Código QR del repositorio GitHub" className="qr-image" />
               </div>
               <p className="qr-text">¿Te interesa cómo está hecho? Escaneá para ver el código en GitHub.</p>
               <a className="qr-link" href={GITHUB_LINK} target="_blank" rel="noreferrer">{GITHUB_LINK}</a>
@@ -785,8 +802,11 @@ function App() {
   
       <header className="app-header">
         <div className="brand-lockup" aria-label="UCSE Vision">
-          <p className="eyebrow">⟨ LABORATORIO IA ⟩</p>
-          <h1 className="app-title glitch-text" data-text="UCSE VISION">UCSE VISION</h1>
+          <img src="/favicon.png" alt="Logo UCSE Vision" className="app-logo-img" />
+          <div>
+            <p className="eyebrow">⟨ LABORATORIO IA ⟩</p>
+            <h1 className="app-title glitch-text" data-text="UCSE VISION">UCSE VISION</h1>
+          </div>
         </div>
       </header>
   
@@ -855,18 +875,15 @@ function App() {
           <div className="reference-card">
             <span className="reference-label">REFERENCIA</span>
             <div className="reference-icon">
-              {legendaryMode
-                ? <PixelEmoji emoji="✨" size={56} />
-                : <PixelEmoji emoji={ICONOS_OBJETO[objetoActual]} size={56} />
-              }
+              <PixelEmoji emoji={ICONOS_OBJETO[objetoActual]} size={56} />
             </div>
-            <strong>{legendaryMode ? 'OBJETO LEGENDARIO' : DICCIONARIO[objetoActual]}</strong>
+            <strong>{DICCIONARIO[objetoActual]}</strong>
           </div>
   
           <div className="objective-box">
             <p className="objective-label">ENCUENTRA Y MANTÉN FRENTE A LA CÁMARA:</p>
             <div className={`objective-pill ${legendaryMode ? 'legendary-pill' : ''}`}>
-              <span>{legendaryMode ? '★ LEGENDARIO ★' : DICCIONARIO[objetoActual]}</span>
+              <span>{legendaryMode ? '★ OBJETO LEGENDARIO ★' : DICCIONARIO[objetoActual]}</span>
             </div>
           </div>
   
