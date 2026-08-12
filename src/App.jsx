@@ -334,18 +334,48 @@ function App() {
   };
 
   const guardarRanking = (nombre, puntajeActual, tiempoTotal) => {
-    const entrada = {
-      name: nombre,
-      points: puntajeActual,
-      time: tiempoTotal,
-    };
+    if (!nombre || !nombre.trim()) return;
 
-    const siguienteRanking = [...leerRanking(), entrada]
+    const rankingPrevio = leerRanking();
+    const nombreLimpio = nombre.trim();
+    
+    // Verificar si el jugador ya existe en el ranking
+    const indexExistente = rankingPrevio.findIndex(
+      (e) => e.name.toLowerCase() === nombreLimpio.toLowerCase()
+    );
+
+    let siguienteRanking = [...rankingPrevio];
+
+    if (indexExistente !== -1) {
+      // Si ya existe y obtuvo mejor puntaje, actualizar su registro
+      if (puntajeActual > siguienteRanking[indexExistente].points) {
+        siguienteRanking[indexExistente] = {
+          name: nombreLimpio,
+          points: puntajeActual,
+          time: tiempoTotal
+        };
+      }
+    } else {
+      // Si es un jugador nuevo, agregar su entrada
+      siguienteRanking.push({
+        name: nombreLimpio,
+        points: puntajeActual,
+        time: tiempoTotal
+      });
+    }
+
+    // Ordenar por puntaje descendente y menor tiempo
+    siguienteRanking = siguienteRanking
       .sort((a, b) => b.points - a.points || a.time - b.time)
       .slice(0, 10);
 
     localStorage.setItem(RANKING_KEY, JSON.stringify(siguienteRanking));
     setRanking(siguienteRanking);
+  };
+
+  const borrarRankingCompleto = () => {
+    localStorage.removeItem(RANKING_KEY);
+    setRanking([]);
   };
 
   const registrarRacha = () => {
@@ -722,6 +752,16 @@ function App() {
             <div className="arcade-border-glow" aria-hidden="true" />
             <div className="ranking-header">
               <span className="ranking-title">★ HIGH SCORES ★</span>
+              {ranking.length > 0 && (
+                <button
+                  type="button"
+                  className="reset-ranking-btn"
+                  onClick={borrarRankingCompleto}
+                  title="Reiniciar tabla de puntajes"
+                >
+                  🗑️ BORRAR RANKING
+                </button>
+              )}
             </div>
 
             <ol className="ranking-list">

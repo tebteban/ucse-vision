@@ -699,9 +699,28 @@ body::after {
   align-items: stretch;
 }
 .ranking-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   font-family: var(--font-arcade);
   color: var(--neon-cyan);
   margin-bottom: 1rem;
+}
+.reset-ranking-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 45, 117, 0.4);
+  color: #ff2d75;
+  font-size: 0.65rem;
+  font-family: var(--font-arcade);
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.reset-ranking-btn:hover {
+  background: rgba(255, 45, 117, 0.2);
+  border-color: #ff2d75;
+  box-shadow: 0 0 8px rgba(255, 45, 117, 0.5);
 }
 .ranking-title { font-size: 1.2rem; }
 .ranking-time { font-size: 0.8rem; color: var(--text-muted); }
