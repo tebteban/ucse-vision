@@ -1,5 +1,9 @@
 import * as ort from 'onnxruntime-web';
 
+// Configurar WebAssembly WASM estable para Electron (sin aceleración GPU WebGL propensa a crashes)
+ort.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
+ort.env.wasm.simd = true;
+
 const LABELS = [
   'auriculares',
   'cable_usb',
@@ -36,11 +40,12 @@ const float32Data = new Float32Array(3 * modelWidth * modelHeight);
 export async function loadYoloModel(modelPath = 'models/best.onnx') {
   if (session) return session;
   try {
+    // Forzar proveedor WASM para evitar pérdidas de contexto gráfico (pantalla negra en Electron)
     session = await ort.InferenceSession.create(modelPath, {
       executionProviders: ['wasm'],
       graphOptimizationLevel: 'all'
     });
-    console.log('✅ Modelo YOLOv8 ONNX cargado exitosamente');
+    console.log('✅ Modelo YOLOv8 ONNX cargado exitosamente en modo WASM ultra-estable');
     return session;
   } catch (e) {
     console.error('Error cargando modelo ONNX:', e);

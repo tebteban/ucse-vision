@@ -40,7 +40,7 @@ const ICONOS_OBJETO = {
 };
 
 const OBJETOS_BUSCADOS = Object.keys(DICCIONARIO);
-const FRAMES_PARA_VALIDAR = 3; // Acierto instantáneo en 3 frames (~0.1s)
+const FRAMES_PARA_VALIDAR = 5; // Requiere 5 frames seguidos de confirmación (~0.25s) para evitar falsos positivos
 const OPCIONES_TIEMPO = [60, 90, 120]; // Opciones de tiempo total de partida
 const RANKING_KEY = 'ucse-vision-ranking';
 const LEGENDARY_EVERY = 5;
@@ -424,8 +424,8 @@ function App() {
 
   const manejarAcierto = () => {
     const now = Date.now();
-    // Cooldown de 400ms para evitar doble disparo simultáneo o falsos aciertos en cadena
-    if (now - lastHitTimeRef.current < 400) {
+    // Cooldown de 1200ms (1.2 segundos) para garantizar CERO doble aciertos seguidos
+    if (now - lastHitTimeRef.current < 1200) {
       return;
     }
     lastHitTimeRef.current = now;
@@ -585,14 +585,13 @@ function App() {
     const canvas = canvasRef.current;
 
     // Detectar tarjetas con YOLOv8 ONNX
-    const predictions = await detectYoloObjects(video, 0.45);
+    const predictions = await detectYoloObjects(video, 0.50);
 
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     let mejorConfianza = 0;
     let encontroObjetivo = false;
-    let esSuperConfianza = false;
 
     predictions.forEach((prediction) => {
       const [x, y, width, height] = prediction.bbox;
@@ -603,7 +602,7 @@ function App() {
         mejorConfianza = certeza;
       }
 
-      if (certeza > 45) {
+      if (certeza > 50) {
         const esObjetivoLegendario = legendaryModeRef.current && claseDetectada === legendaryObjectRef.current;
         const esObjetivoNormal = !legendaryModeRef.current && claseDetectada === objetoActualRef.current;
         const esObjetivo = esObjetivoLegendario || esObjetivoNormal;
@@ -612,10 +611,6 @@ function App() {
 
         if (esObjetivo) {
           encontroObjetivo = true;
-          // Requiere 95%+ para acierto instantáneo de 1 solo cuadro
-          if (certeza >= 95) {
-            esSuperConfianza = true;
-          }
           playScanTone();
 
           ctx.strokeStyle = '#10B981';
@@ -643,16 +638,11 @@ function App() {
     setIaConfidence(mejorConfianza);
 
     if (encontroObjetivo) {
-      if (esSuperConfianza) {
-        // Acierto instantáneo con 95%+ de certeza
-        manejarAcierto();
-      } else {
-        frameCountRef.current += 1;
-        setProgresoEscaneo((frameCountRef.current / FRAMES_PARA_VALIDAR) * 100);
+      frameCountRef.current += 1;
+      setProgresoEscaneo((frameCountRef.current / FRAMES_PARA_VALIDAR) * 100);
 
-        if (frameCountRef.current >= FRAMES_PARA_VALIDAR) {
-          manejarAcierto();
-        }
+      if (frameCountRef.current >= FRAMES_PARA_VALIDAR) {
+        manejarAcierto();
       }
     } else {
       if (frameCountRef.current > 0) {
