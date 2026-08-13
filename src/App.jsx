@@ -116,8 +116,8 @@ function App() {
   const [gameEnded, setGameEnded] = useState(false);
   const [playerName, setPlayerName] = useState('');
   const [setupName, setSetupName] = useState('');
-  const [timePerObject, setTimePerObject] = useState(30);
-  const [timeLeft, setTimeLeft] = useState(30);
+  const [timePerObject, setTimePerObject] = useState(OPCIONES_TIEMPO[0]);
+  const [timeLeft, setTimeLeft] = useState(OPCIONES_TIEMPO[0]);
   const [sessionTime, setSessionTime] = useState(0);
   const [puntos, setPuntos] = useState(0);
   const [objetoActual, setObjetoActual] = useState(OBJETOS_BUSCADOS[0]);
