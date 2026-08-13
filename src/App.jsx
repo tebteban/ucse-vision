@@ -40,9 +40,8 @@ const ICONOS_OBJETO = {
 };
 
 const OBJETOS_BUSCADOS = Object.keys(DICCIONARIO);
-const TOTAL_OBJETOS_PARTIDA = 10;
 const FRAMES_PARA_VALIDAR = 3; // Acierto instantáneo en 3 frames (~0.1s)
-const OPCIONES_TIEMPO = [15, 30, 60];
+const OPCIONES_TIEMPO = [60, 90, 120]; // Opciones de tiempo total de partida
 const RANKING_KEY = 'ucse-vision-ranking';
 const LEGENDARY_EVERY = 5;
 const LEGENDARY_SECONDS = 10;
@@ -228,47 +227,40 @@ function App() {
     const interval = setInterval(() => {
       setSessionTime((current) => current + 1);
 
+      // Descontar tiempo global de la partida
       setTimeLeft((current) => {
         if (current <= 1) {
           clearInterval(interval);
+          playSuccessTone();
+          finalizarPartida(`¡Tiempo completado! Lograste escanear ${objectsFoundRef.current} objetos 🎉`);
+          return 0;
+        }
+        return current - 1;
+      });
 
-          if (legendaryModeRef.current) {
+      // Descontar timer breve de 10s del objeto legendario si está activo
+      if (legendaryModeRef.current) {
+        setLegendaryTimeLeft((currentLeg) => {
+          if (currentLeg <= 1) {
+            // Expira el objeto legendario
             legendaryModeRef.current = false;
             setLegendaryMode(false);
             setLegendaryObject(null);
             legendaryObjectRef.current = null;
+            setStatusMessage('¡El objeto legendario ha desaparecido!');
 
-            const atendidosLegendario = objectsAttemptedRef.current + 1;
-            objectsAttemptedRef.current = atendidosLegendario;
-            setObjectsAttempted(atendidosLegendario);
+            // Volver a un objeto normal sin restar puntos ni terminar partida
+            let nuevoObjeto;
+            do {
+              nuevoObjeto = OBJETOS_BUSCADOS[Math.floor(Math.random() * OBJETOS_BUSCADOS.length)];
+            } while (nuevoObjeto === objetoActualRef.current);
+            setObjetoActual(nuevoObjeto);
 
-            if (atendidosLegendario >= TOTAL_OBJETOS_PARTIDA) {
-              finalizarPartida(`¡Partida completa! Acertaste ${objectsFoundRef.current}/${TOTAL_OBJETOS_PARTIDA} 🎯`);
-              return timePerObject;
-            }
-
-            setStatusMessage('¡Se acabó el tiempo legendario!');
-            setObjetoActual(OBJETOS_BUSCADOS[Math.floor(Math.random() * OBJETOS_BUSCADOS.length)]);
-            return timePerObject;
+            return 0;
           }
-
-          guardarRanking(playerNameRef.current || 'Jugador', puntosRef.current, sessionTimeRef.current + 1);
-
-          const atendidos = objectsAttemptedRef.current + 1;
-          objectsAttemptedRef.current = atendidos;
-          setObjectsAttempted(atendidos);
-
-          if (atendidos >= TOTAL_OBJETOS_PARTIDA) {
-            finalizarPartida(`¡Partida completa! Acertaste ${objectsFoundRef.current}/${TOTAL_OBJETOS_PARTIDA} 🎯`);
-            return timePerObject;
-          }
-
-          avanzarObjeto(-25, '¡Se acabó el tiempo!');
-          return timePerObject;
-        }
-
-        return current - 1;
-      });
+          return currentLeg - 1;
+        });
+      }
     }, 1000);
 
     return () => clearInterval(interval);
@@ -387,12 +379,12 @@ function App() {
     comboCountRef.current = nextCombo;
     setComboCount(nextCombo);
 
-    const isComboActive = nextCombo >= 3;
+    const isComboActive = nextCombo >= 2; // Racha activa desde 2 aciertos
     comboActiveRef.current = isComboActive;
     setComboActive(isComboActive);
 
     if (isComboActive) {
-      setStatusMessage('¡Racha x2! 🔥');
+      setStatusMessage(`¡Racha x2! (Combo x${nextCombo}) 🔥`);
     }
 
     lastSuccessAtRef.current = now;
@@ -419,7 +411,6 @@ function App() {
     setPuntos((prev) => prev + puntajeReal);
 
     setStatusMessage(mensaje || (comboActiveRef.current ? '¡Racha x2! 🔥' : ''));
-    setTimeLeft(timePerObject);
 
     let nuevoObjeto;
     do {
@@ -439,42 +430,21 @@ function App() {
       setLegendaryMode(false);
       setLegendaryObject(null);
       legendaryObjectRef.current = null;
-
-      const atendidosLeg = objectsAttemptedRef.current + 1;
-      objectsAttemptedRef.current = atendidosLeg;
-      setObjectsAttempted(atendidosLeg);
+      setLegendaryTimeLeft(0);
 
       const encontradosLeg = objectsFoundRef.current + 1;
       objectsFoundRef.current = encontradosLeg;
       setObjectsFound(encontradosLeg);
 
       playSuccessTone();
-
-      if (atendidosLeg >= TOTAL_OBJETOS_PARTIDA) {
-        setPuntos((prev) => prev + 500);
-        finalizarPartida(`¡Partida completa! Acertaste ${encontradosLeg}/${TOTAL_OBJETOS_PARTIDA} 🎉`);
-        return;
-      }
-
       registrarRacha();
       avanzarObjeto(500, '¡OBJETO LEGENDARIO ENCONTRADO! ✨ (+500 pts)');
       return;
     }
 
-    const siguienteAtendidos = objectsAttemptedRef.current + 1;
-    objectsAttemptedRef.current = siguienteAtendidos;
-    setObjectsAttempted(siguienteAtendidos);
-
     const siguienteObjetosEncontrados = objectsFoundRef.current + 1;
     objectsFoundRef.current = siguienteObjetosEncontrados;
     setObjectsFound(siguienteObjetosEncontrados);
-
-    if (siguienteAtendidos >= TOTAL_OBJETOS_PARTIDA) {
-      setPuntos((prev) => prev + 250);
-      playSuccessTone();
-      finalizarPartida(`¡Partida completa! Acertaste ${siguienteObjetosEncontrados}/${TOTAL_OBJETOS_PARTIDA} 🎉`);
-      return;
-    }
 
     const isLegendary = siguienteObjetosEncontrados > 0 && siguienteObjetosEncontrados % LEGENDARY_EVERY === 0;
     if (isLegendary) {
@@ -485,8 +455,8 @@ function App() {
       setLegendaryObject(siguienteLegendario);
       legendaryModeRef.current = true;
       setLegendaryMode(true);
-      setStatusMessage(`¡MODO LEGENDARIO! Busca ${DICCIONARIO[siguienteLegendario]} ✨`);
-      setTimeLeft(LEGENDARY_SECONDS);
+      setLegendaryTimeLeft(LEGENDARY_SECONDS);
+      setStatusMessage(`¡MODO LEGENDARIO (10s)! Busca ${DICCIONARIO[siguienteLegendario]} ✨`);
       setObjetoActual(siguienteLegendario);
       playSuccessTone();
       return;
@@ -723,8 +693,8 @@ function App() {
             </div>
 
             <div className="final-summary">
-              <span>OBJETOS ENCONTRADOS</span>
-              <strong>{objectsFound}/{TOTAL_OBJETOS_PARTIDA}</strong>
+              <span>OBJETOS ESCANEADOS</span>
+              <strong>{objectsFound} 🎯</strong>
             </div>
 
             <div className="stat-row">
@@ -734,7 +704,7 @@ function App() {
 
             <div className="qr-card qr-card-final">
               <div className="qr-box" aria-label="QR del proyecto">
-                <img src="/qr-github.png" alt="Código QR del repositorio GitHub" className="qr-image" />
+                <img src="qr-github.png" alt="Código QR del repositorio GitHub" className="qr-image" />
               </div>
               <p className="qr-text">¿Te interesa cómo está hecho? Escaneá para ver el código en GitHub.</p>
               <a className="qr-link" href={GITHUB_LINK} target="_blank" rel="noreferrer">{GITHUB_LINK}</a>
@@ -903,13 +873,17 @@ function App() {
             </div>
           </div>
   
-          <div className="progress-pips">
-            {Array.from({ length: TOTAL_OBJETOS_PARTIDA }, (_, i) => (
-              <div
-                key={i}
-                className={`progress-pip ${i < objectsFound ? 'found' : ''} ${i === objectsFound ? 'current' : ''}`}
-              />
-            ))}
+          <div className="meta-stack">
+            <div className="mini-card">
+              <span className="mini-label">OBJETOS LOGRADOS</span>
+              <strong>{objectsFound} 🎯</strong>
+            </div>
+            {legendaryMode && (
+              <div className="mini-card timer-card timer-urgent">
+                <span className="mini-label">LEGENDARIO</span>
+                <strong>{legendaryTimeLeft}s ⏳</strong>
+              </div>
+            )}
           </div>
   
           <div className="reference-card">
