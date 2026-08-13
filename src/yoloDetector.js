@@ -33,7 +33,7 @@ if (offscreenCanvas) {
 const ctx = offscreenCanvas ? offscreenCanvas.getContext('2d', { willReadFrequently: true }) : null;
 const float32Data = new Float32Array(3 * modelWidth * modelHeight);
 
-export async function loadYoloModel(modelPath = '/models/best.onnx') {
+export async function loadYoloModel(modelPath = 'models/best.onnx') {
   if (session) return session;
   try {
     session = await ort.InferenceSession.create(modelPath, {

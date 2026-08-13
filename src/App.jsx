@@ -177,7 +177,7 @@ function App() {
   useEffect(() => {
     const loadModel = async () => {
       try {
-        const loadedModel = await loadYoloModel('/models/best.onnx');
+        const loadedModel = await loadYoloModel('models/best.onnx');
         setModel(loadedModel);
         setLoading(false);
       } catch (error) {

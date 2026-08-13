@@ -21,7 +21,9 @@ dist-ssr
 *.ntvs*
 *.njsproj
 *.sln
-# Python / YOLO training cache
+# Build & Executables output
+dist/
+release/
 *.pt
 Tarjetas-Juego-UCSE-YOLOv8n-1/
 runs/
