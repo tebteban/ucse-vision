@@ -71,6 +71,7 @@ export async function detectYoloObjects(videoElement, confidenceThreshold = 0.35
 
     const inputTensor = new ort.Tensor('float32', float32Data, [1, 3, modelHeight, modelWidth]);
     const feeds = { [session.inputNames[0]]: inputTensor };
+    
     const results = await session.run(feeds);
     const output = results[session.outputNames[0]];
 
@@ -113,7 +114,16 @@ export async function detectYoloObjects(videoElement, confidenceThreshold = 0.35
       }
     }
 
+    // Liberar memoria de tensores de ONNX Runtime explícitamente
+    try {
+      if (inputTensor && inputTensor.dispose) inputTensor.dispose();
+      if (output && output.dispose) output.dispose();
+    } catch (_) {}
+
     return nms(boxes, 0.40);
+  } catch (err) {
+    console.error('Error durante inferencia YOLO:', err);
+    return [];
   } finally {
     isProcessing = false;
   }

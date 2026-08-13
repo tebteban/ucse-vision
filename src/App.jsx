@@ -420,7 +420,16 @@ function App() {
     setObjetoActual(nuevoObjeto);
   };
 
+  const lastHitTimeRef = useRef(0);
+
   const manejarAcierto = () => {
+    const now = Date.now();
+    // Cooldown de 400ms para evitar doble disparo simultáneo o falsos aciertos en cadena
+    if (now - lastHitTimeRef.current < 400) {
+      return;
+    }
+    lastHitTimeRef.current = now;
+
     frameCountRef.current = 0;
     setProgresoEscaneo(0);
 
@@ -576,7 +585,7 @@ function App() {
     const canvas = canvasRef.current;
 
     // Detectar tarjetas con YOLOv8 ONNX
-    const predictions = await detectYoloObjects(video, 0.40);
+    const predictions = await detectYoloObjects(video, 0.45);
 
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -594,7 +603,7 @@ function App() {
         mejorConfianza = certeza;
       }
 
-      if (certeza > 40) {
+      if (certeza > 45) {
         const esObjetivoLegendario = legendaryModeRef.current && claseDetectada === legendaryObjectRef.current;
         const esObjetivoNormal = !legendaryModeRef.current && claseDetectada === objetoActualRef.current;
         const esObjetivo = esObjetivoLegendario || esObjetivoNormal;
@@ -603,7 +612,8 @@ function App() {
 
         if (esObjetivo) {
           encontroObjetivo = true;
-          if (certeza >= 90) {
+          // Requiere 95%+ para acierto instantáneo de 1 solo cuadro
+          if (certeza >= 95) {
             esSuperConfianza = true;
           }
           playScanTone();
@@ -634,7 +644,7 @@ function App() {
 
     if (encontroObjetivo) {
       if (esSuperConfianza) {
-        // Si la confianza es >= 90%, acierto directo e instantáneo
+        // Acierto instantáneo con 95%+ de certeza
         manejarAcierto();
       } else {
         frameCountRef.current += 1;
