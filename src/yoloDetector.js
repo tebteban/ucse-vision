@@ -1,8 +1,9 @@
 import * as ort from 'onnxruntime-web';
 
-// Configurar WebAssembly WASM estable para Electron (sin aceleración GPU WebGL propensa a crashes)
-ort.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
-ort.env.wasm.simd = true;
+// Configurar WebAssembly para máxima compatibilidad
+ort.env.wasm.numThreads = 1; // Un solo hilo para evitar race conditions
+// Dejar que onnxruntime-web resuelva sus propios .wasm automáticamente
+// (NO sobreescribir wasmPaths: Vite/Electron lo resuelve correctamente por defecto)
 
 const LABELS = [
   'auriculares',
@@ -23,24 +24,28 @@ const LABELS = [
   'webcam'
 ];
 
+const MODEL_WIDTH = 640;
+const MODEL_HEIGHT = 640;
+const CHANNEL_SIZE = MODEL_WIDTH * MODEL_HEIGHT;
+
 let session = null;
 let isProcessing = false;
+let lastCleanupTime = 0;
+const CLEANUP_INTERVAL = 5000; // Limpiar memoria cada 5 segundos
 
-// Elementos auxiliares persistentes para evitar garbage collection
-const modelWidth = 640;
-const modelHeight = 640;
-const offscreenCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
-if (offscreenCanvas) {
-  offscreenCanvas.width = modelWidth;
-  offscreenCanvas.height = modelHeight;
-}
-const ctx = offscreenCanvas ? offscreenCanvas.getContext('2d', { willReadFrequently: true }) : null;
-const float32Data = new Float32Array(3 * modelWidth * modelHeight);
+// Canvas offscreen reutilizable
+const offscreenCanvas = document.createElement('canvas');
+offscreenCanvas.width = MODEL_WIDTH;
+offscreenCanvas.height = MODEL_HEIGHT;
+const ctx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+
+// Buffer de datos reutilizable
+const float32Data = new Float32Array(3 * CHANNEL_SIZE);
 
 export async function loadYoloModel(modelPath = 'models/best.onnx') {
   if (session) return session;
+
   try {
-    // Forzar proveedor WASM para evitar pérdidas de contexto gráfico (pantalla negra en Electron)
     session = await ort.InferenceSession.create(modelPath, {
       executionProviders: ['wasm'],
       graphOptimizationLevel: 'all'
@@ -53,7 +58,7 @@ export async function loadYoloModel(modelPath = 'models/best.onnx') {
   }
 }
 
-export async function detectYoloObjects(videoElement, confidenceThreshold = 0.35) {
+export async function detectYoloObjects(videoElement, confidenceThreshold = 0.5) {
   if (!session || !videoElement || videoElement.readyState !== 4 || isProcessing) {
     return [];
   }
@@ -61,30 +66,30 @@ export async function detectYoloObjects(videoElement, confidenceThreshold = 0.35
   isProcessing = true;
 
   try {
-    ctx.drawImage(videoElement, 0, 0, modelWidth, modelHeight);
-    const imageData = ctx.getImageData(0, 0, modelWidth, modelHeight);
+    // Dibujar frame en canvas offscreen
+    ctx.drawImage(videoElement, 0, 0, MODEL_WIDTH, MODEL_HEIGHT);
+    const imageData = ctx.getImageData(0, 0, MODEL_WIDTH, MODEL_HEIGHT);
     const data = imageData.data;
 
-    // Conversión súper rápida a CHW
-    const channelSize = modelWidth * modelHeight;
-    for (let i = 0; i < channelSize; i++) {
+    // Conversión a formato CHW (Channel-Height-Width)
+    for (let i = 0; i < CHANNEL_SIZE; i++) {
       const idx = i * 4;
-      float32Data[i] = data[idx] / 255.0;                   // Red
-      float32Data[i + channelSize] = data[idx + 1] / 255.0; // Green
-      float32Data[i + 2 * channelSize] = data[idx + 2] / 255.0; // Blue
+      float32Data[i] = data[idx] / 255.0;                    // Red
+      float32Data[i + CHANNEL_SIZE] = data[idx + 1] / 255.0; // Green
+      float32Data[i + 2 * CHANNEL_SIZE] = data[idx + 2] / 255.0; // Blue
     }
 
-    const inputTensor = new ort.Tensor('float32', float32Data, [1, 3, modelHeight, modelWidth]);
+    const inputTensor = new ort.Tensor('float32', float32Data, [1, 3, MODEL_HEIGHT, MODEL_WIDTH]);
     const feeds = { [session.inputNames[0]]: inputTensor };
     
     const results = await session.run(feeds);
     const output = results[session.outputNames[0]];
 
     const rawData = output.data;
-    const numAnchors = output.dims[2]; // 8400
+    const numAnchors = output.dims[2]; // 8400 o similar
 
-    const scaleX = videoElement.videoWidth / modelWidth;
-    const scaleY = videoElement.videoHeight / modelHeight;
+    const scaleX = videoElement.videoWidth / MODEL_WIDTH;
+    const scaleY = videoElement.videoHeight / MODEL_HEIGHT;
 
     const boxes = [];
 
@@ -92,6 +97,7 @@ export async function detectYoloObjects(videoElement, confidenceThreshold = 0.35
       let maxScore = 0;
       let maxClassId = -1;
 
+      // Encontrar la clase con mayor confianza
       for (let c = 0; c < LABELS.length; c++) {
         const score = rawData[(4 + c) * numAnchors + i];
         if (score > maxScore) {
@@ -100,7 +106,7 @@ export async function detectYoloObjects(videoElement, confidenceThreshold = 0.35
         }
       }
 
-      if (maxScore >= confidenceThreshold) {
+      if (maxScore >= confidenceThreshold && maxClassId >= 0) {
         const cx = rawData[0 * numAnchors + i];
         const cy = rawData[1 * numAnchors + i];
         const w = rawData[2 * numAnchors + i];
@@ -119,11 +125,18 @@ export async function detectYoloObjects(videoElement, confidenceThreshold = 0.35
       }
     }
 
-    // Liberar memoria de tensores de ONNX Runtime explícitamente
-    try {
-      if (inputTensor && inputTensor.dispose) inputTensor.dispose();
-      if (output && output.dispose) output.dispose();
-    } catch (_) {}
+    // Limpiar memoria
+    if (inputTensor.dispose) inputTensor.dispose();
+    if (output.dispose) output.dispose();
+    
+    // Cleanup periódico
+    const now = Date.now();
+    if (now - lastCleanupTime > CLEANUP_INTERVAL) {
+      lastCleanupTime = now;
+      if (typeof globalThis !== 'undefined' && typeof globalThis.gc === 'function') {
+        globalThis.gc();
+      }
+    }
 
     return nms(boxes, 0.40);
   } catch (err) {
@@ -135,18 +148,30 @@ export async function detectYoloObjects(videoElement, confidenceThreshold = 0.35
 }
 
 function nms(boxes, iouThreshold) {
+  if (boxes.length === 0) return boxes;
+
+  // Ordenar por score descendente
   boxes.sort((a, b) => b.score - a.score);
+
   const selected = [];
+  const active = new Array(boxes.length).fill(true);
 
-  while (boxes.length > 0) {
-    const current = boxes.shift();
-    selected.push(current);
+  for (let i = 0; i < boxes.length; i++) {
+    if (!active[i]) continue;
 
-    boxes = boxes.filter(box => {
-      if (box.class !== current.class) return true;
-      const iou = calculateIoU(current.bbox, box.bbox);
-      return iou < iouThreshold;
-    });
+    selected.push(boxes[i]);
+    const currentBox = boxes[i];
+
+    // NMS clásico: suprime cualquier box (de cualquier clase) que se solape
+    // fuertemente con la seleccionada, sin importar la clase.
+    for (let j = i + 1; j < boxes.length; j++) {
+      if (!active[j]) continue;
+
+      const iou = calculateIoU(currentBox.bbox, boxes[j].bbox);
+      if (iou > iouThreshold) {
+        active[j] = false;
+      }
+    }
   }
 
   return selected;
@@ -168,3 +193,4 @@ function calculateIoU(boxA, boxB) {
   const union = areaA + areaB - intersection;
   return union === 0 ? 0 : intersection / union;
 }
+

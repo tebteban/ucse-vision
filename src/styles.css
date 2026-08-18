@@ -2,8 +2,8 @@
 
 :root {
   /* Arcade Palette */
-  --bg-deep: #050814;
-  --bg-panel: #0a0e24;
+  --bg-deep: #000000;
+  --bg-panel: #000000;
   --neon-cyan: #00fff5;
   --neon-magenta: #ff2d75;
   --neon-yellow: #ffe53b;
@@ -38,7 +38,7 @@
 
 body {
   font-family: var(--font-body);
-  background-color: var(--bg-deep);
+  background-color: #000000;
   color: var(--text-main);
   overflow: hidden;
   height: 100vh;
@@ -62,8 +62,10 @@ body::after {
   background-size: 100% 4px;
   z-index: 9998;
   pointer-events: none;
+  opacity: 0.6;
 }
 
+/* CRT vignette con parpadeo arcade y scanlines */
 .crt-overlay {
   position: fixed;
   top: 0;
@@ -73,23 +75,26 @@ body::after {
   background: radial-gradient(circle at center, transparent 50%, rgba(0, 0, 0, 0.8) 120%);
   pointer-events: none;
   z-index: 9999;
-  animation: flicker 0.15s infinite;
+  animation: flicker 0.2s infinite;
 }
 
-/* ARCADE GRID BACKGROUND */
+/* ARCADE GRID BACKGROUND (Visible and smoothly scrolling) */
 .arcade-grid-bg {
   position: fixed;
-  bottom: -50%;
+  bottom: -30%;
   left: -50%;
   width: 200%;
-  height: 150%;
-  background-image: linear-gradient(var(--neon-magenta) 2px, transparent 2px),
-    linear-gradient(90deg, var(--neon-magenta) 2px, transparent 2px);
-  background-size: 50px 50px;
-  transform: perspective(600px) rotateX(60deg) translateY(0);
-  animation: gridScroll 3s linear infinite;
-  opacity: 0.2;
-  z-index: -1;
+  height: 120%;
+  background-image:
+    linear-gradient(rgba(255, 45, 117, 0.45) 2px, transparent 2px),
+    linear-gradient(90deg, rgba(0, 255, 245, 0.45) 2px, transparent 2px);
+  background-size: 60px 60px;
+  transform: perspective(400px) rotateX(65deg) translateY(0);
+  animation: gridScroll 2.5s linear infinite;
+  opacity: 0.55;
+  z-index: 0;
+  pointer-events: none;
+  will-change: transform;
 }
 
 /* PARTICLES */
@@ -97,38 +102,58 @@ body::after {
   position: fixed;
   top: 0; left: 0; width: 100vw; height: 100vh;
   pointer-events: none;
-  z-index: -1;
+  z-index: 0;
+  opacity: 0.85;
 }
 
-.arcade-particles::before, .arcade-particles::after {
+.arcade-particles::before {
   content: '';
   position: absolute;
-  width: 2px; height: 2px;
+  width: 3px; height: 3px;
   background: transparent;
-  box-shadow: 100px 200px var(--neon-cyan), 300px 400px var(--neon-magenta), 
-              500px 100px var(--neon-yellow), 700px 800px var(--neon-blue),
-              200px 600px var(--neon-green), 800px 300px var(--neon-cyan),
-              400px 700px var(--neon-magenta), 900px 500px var(--neon-yellow);
+  box-shadow: 100px 200px var(--neon-cyan),
+              400px 500px var(--neon-magenta),
+              700px 300px var(--neon-yellow),
+              300px 700px var(--neon-green),
+              850px 150px var(--neon-cyan),
+              200px 400px var(--neon-magenta),
+              600px 600px var(--neon-yellow),
+              950px 350px var(--neon-green);
   animation: float 20s linear infinite;
 }
+
 .arcade-particles::after {
-  box-shadow: 150px 250px var(--neon-blue), 350px 450px var(--neon-green), 
-              550px 150px var(--neon-cyan), 750px 850px var(--neon-magenta),
-              250px 650px var(--neon-yellow), 850px 350px var(--neon-blue),
-              450px 750px var(--neon-green), 950px 550px var(--neon-cyan);
-  animation-duration: 25s;
+  content: '';
+  position: absolute;
+  width: 4px; height: 4px;
+  background: transparent;
+  box-shadow: 550px 100px var(--neon-yellow),
+              150px 650px var(--neon-cyan),
+              900px 450px var(--neon-green),
+              50px 350px var(--neon-magenta),
+              750px 200px var(--neon-cyan),
+              350px 550px var(--neon-magenta);
+  animation: float 28s linear infinite reverse;
 }
 
 /* ANIMATIONS */
 @keyframes gridScroll {
-  0% { transform: perspective(600px) rotateX(60deg) translateY(0); }
-  100% { transform: perspective(600px) rotateX(60deg) translateY(50px); }
+  0% { transform: perspective(400px) rotateX(65deg) translateY(0); }
+  100% { transform: perspective(400px) rotateX(65deg) translateY(60px); }
 }
 
+/* Flicker CRT dinámico con micro-saltos de voltaje arcade */
 @keyframes flicker {
-  0% { opacity: 0.95; }
-  50% { opacity: 0.85; }
-  100% { opacity: 0.95; }
+  0% { opacity: 0.98; }
+  15% { opacity: 0.92; }
+  16% { opacity: 0.99; }
+  45% { opacity: 0.94; }
+  46% { opacity: 1; }
+  70% { opacity: 0.91; }
+  72% { opacity: 0.98; }
+  88% { opacity: 0.88; }
+  90% { opacity: 0.97; }
+  100% { opacity: 0.98; }
 }
 
 @keyframes float {
@@ -136,18 +161,60 @@ body::after {
   to { transform: translateY(-100vh); }
 }
 
-@keyframes glitch {
-  0% { clip-path: inset(10% 0 80% 0); transform: translate(-2px, 1px); }
-  20% { clip-path: inset(80% 0 10% 0); transform: translate(2px, -1px); }
-  40% { clip-path: inset(30% 0 50% 0); transform: translate(-2px, 2px); }
-  60% { clip-path: inset(50% 0 30% 0); transform: translate(2px, -2px); }
-  80% { clip-path: inset(5% 0 90% 0); transform: translate(-1px, 1px); }
-  100% { clip-path: inset(90% 0 5% 0); transform: translate(1px, -1px); }
+/* Glitch de letras con saltos y cortes de sincronización */
+@keyframes textGlitchShake {
+  0%, 100% { transform: translate(0, 0) skew(0deg); }
+  15% { transform: translate(-2px, 1px) skew(-1deg); }
+  18% { transform: translate(2px, -1px) skew(1deg); }
+  21% { transform: translate(0, 0) skew(0deg); }
+  45% { transform: translate(1px, -1px) skew(0.5deg); }
+  48% { transform: translate(-2px, 1px) skew(-0.5deg); }
+  51% { transform: translate(0, 0) skew(0deg); }
+  75% { transform: translate(-3px, -1px) skew(-1.5deg); }
+  78% { transform: translate(3px, 1px) skew(1.2deg); }
+  81% { transform: translate(0, 0) skew(0deg); }
 }
 
-@keyframes scanSweep {
-  0% { transform: translateY(-100%); }
-  100% { transform: translateY(100vh); }
+@keyframes glitchAnim1 {
+  0% { clip-path: inset(20% 0 60% 0); transform: translate(-3px, 1px); }
+  10% { clip-path: inset(80% 0 5% 0); transform: translate(3px, -2px); }
+  20% { clip-path: inset(10% 0 75% 0); transform: translate(-2px, 2px); }
+  30% { clip-path: inset(50% 0 30% 0); transform: translate(3px, -1px); }
+  40% { clip-path: inset(5% 0 85% 0); transform: translate(-3px, 1px); }
+  50% { clip-path: inset(70% 0 10% 0); transform: translate(2px, 2px); }
+  60% { clip-path: inset(30% 0 50% 0); transform: translate(-2px, -2px); }
+  70% { clip-path: inset(90% 0 2% 0); transform: translate(3px, 1px); }
+  80% { clip-path: inset(15% 0 65% 0); transform: translate(-1px, 2px); }
+  90% { clip-path: inset(45% 0 40% 0); transform: translate(2px, -1px); }
+  100% { clip-path: inset(60% 0 20% 0); transform: translate(-2px, 1px); }
+}
+
+@keyframes glitchAnim2 {
+  0% { clip-path: inset(65% 0 15% 0); transform: translate(3px, -1px); }
+  15% { clip-path: inset(10% 0 70% 0); transform: translate(-3px, 2px); }
+  30% { clip-path: inset(85% 0 5% 0); transform: translate(2px, -2px); }
+  45% { clip-path: inset(25% 0 55% 0); transform: translate(-2px, 1px); }
+  60% { clip-path: inset(5% 0 90% 0); transform: translate(3px, 2px); }
+  75% { clip-path: inset(75% 0 10% 0); transform: translate(-1px, -2px); }
+  90% { clip-path: inset(40% 0 45% 0); transform: translate(2px, 1px); }
+  100% { clip-path: inset(15% 0 75% 0); transform: translate(-3px, -1px); }
+}
+
+/* Falla / Micro-vibración de sincronización analógica en recuadros arcade */
+@keyframes arcadeJitter {
+  0%, 100% { transform: translate(0, 0); }
+  24% { transform: translate(0, 0); }
+  25% { transform: translate(-2px, 1px); filter: drop-shadow(-2px 0 var(--neon-magenta)); }
+  26% { transform: translate(2px, -1px); filter: drop-shadow(2px 0 var(--neon-cyan)); }
+  27% { transform: translate(0, 0); filter: none; }
+  58% { transform: translate(0, 0); }
+  59% { transform: translate(2px, -2px); filter: drop-shadow(2px 0 var(--neon-yellow)); }
+  60% { transform: translate(-2px, 1px); filter: drop-shadow(-2px 0 var(--neon-cyan)); }
+  61% { transform: translate(0, 0); filter: none; }
+  88% { transform: translate(0, 0); }
+  89% { transform: translate(-3px, 1px); filter: drop-shadow(-3px 0 var(--neon-magenta)); }
+  90% { transform: translate(3px, -1px); filter: drop-shadow(3px 0 var(--neon-cyan)); }
+  91% { transform: translate(0, 0); filter: none; }
 }
 
 @keyframes pulseNeon {
@@ -185,6 +252,45 @@ body::after {
   50% { opacity: 1; filter: drop-shadow(0 0 10px var(--neon-cyan)); }
 }
 
+@keyframes cardEntrance {
+  0% { opacity: 0; transform: scale(0.9) translateY(20px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes cardFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes gameOverSlam {
+  0% { transform: scale(2.5); opacity: 0; filter: blur(10px); }
+  40% { transform: scale(0.95); opacity: 1; filter: blur(0); }
+  55% { transform: scale(1.05); }
+  70% { transform: scale(0.98); }
+  100% { transform: scale(1); opacity: 1; filter: blur(0); }
+}
+
+@keyframes borderRotate {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes badgePulse {
+  0%, 100% { box-shadow: 0 0 5px rgba(77, 125, 255, 0.3); }
+  50% { box-shadow: 0 0 15px rgba(77, 125, 255, 0.6), 0 0 25px rgba(77, 125, 255, 0.2); }
+}
+
+@keyframes buttonGlow {
+  0%, 100% { box-shadow: 0 0 5px rgba(0, 255, 245, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(0, 255, 245, 0.5), 0 0 40px rgba(0, 255, 245, 0.2); }
+}
+
+@keyframes titleShimmer {
+  0% { text-shadow: 2px 2px var(--neon-magenta), -2px -2px var(--neon-cyan); }
+  50% { text-shadow: 3px 3px var(--neon-magenta), -3px -3px var(--neon-cyan), 0 0 20px rgba(0, 255, 245, 0.4); }
+  100% { text-shadow: 2px 2px var(--neon-magenta), -2px -2px var(--neon-cyan); }
+}
+
 /* TYPOGRAPHY UTILS */
 .glitch-text {
   position: relative;
@@ -192,7 +298,10 @@ body::after {
   text-transform: uppercase;
   color: #fff;
   text-shadow: 2px 2px var(--neon-magenta), -2px -2px var(--neon-cyan);
+  display: inline-block;
+  animation: textGlitchShake 2.5s infinite ease-in-out alternate;
 }
+
 .glitch-text::before, .glitch-text::after {
   content: attr(data-text);
   position: absolute;
@@ -200,17 +309,24 @@ body::after {
   left: 0;
   width: 100%;
   height: 100%;
-  background: var(--bg-deep);
+  background: transparent;
+  pointer-events: none;
 }
+
 .glitch-text::before {
   left: 2px;
-  text-shadow: -1px 0 var(--neon-magenta);
-  animation: glitch 2s infinite linear alternate-reverse;
+  text-shadow: -2px 0 var(--neon-magenta);
+  color: var(--neon-magenta);
+  animation: glitchAnim1 1.6s infinite linear alternate-reverse;
+  opacity: 0.9;
 }
+
 .glitch-text::after {
   left: -2px;
-  text-shadow: -1px 0 var(--neon-cyan);
-  animation: glitch 3s infinite linear alternate-reverse;
+  text-shadow: 2px 0 var(--neon-cyan);
+  color: var(--neon-cyan);
+  animation: glitchAnim2 2s infinite linear alternate-reverse;
+  opacity: 0.9;
 }
 
 .insert-coin {
@@ -223,11 +339,19 @@ body::after {
 }
 
 /* LAYOUT CLASSES */
+@keyframes screenGlitchRoll {
+  0%, 89%, 100% { transform: translateY(0) skewX(0deg); }
+  90%  { transform: translateY(-2px) skewX(0.4deg); }
+  91%  { transform: translateY(2px) skewX(-0.3deg); }
+  92%  { transform: translateY(0) skewX(0deg); }
+}
+
 .app-shell {
   display: flex;
   flex-direction: column;
   height: 100vh;
   padding: 1rem;
+  animation: screenGlitchRoll 12s ease-in-out infinite;
 }
 .setup-shell {
   display: flex;
@@ -257,6 +381,11 @@ body::after {
   object-fit: contain;
   image-rendering: pixelated;
   filter: drop-shadow(0 0 8px var(--neon-cyan));
+  animation: cornerPulse 2s infinite;
+  transition: transform 0.3s ease;
+}
+.app-logo-img:hover {
+  transform: scale(1.15) rotate(5deg);
 }
 .app-layout {
   display: flex;
@@ -266,13 +395,51 @@ body::after {
 }
 
 /* PANELS & CARDS */
+@keyframes neonPulseCardCyan {
+  0%, 100% {
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 15px rgba(0, 255, 245, 0.4), inset 0 0 12px rgba(0, 255, 245, 0.15);
+  }
+  50% {
+    border-color: #ffffff;
+    box-shadow: 0 0 30px rgba(0, 255, 245, 0.7), inset 0 0 25px rgba(0, 255, 245, 0.3);
+  }
+}
+
+@keyframes neonPulseCardMagenta {
+  0%, 100% {
+    border-color: var(--neon-magenta);
+    box-shadow: 0 0 18px rgba(255, 45, 117, 0.4), inset 0 0 12px rgba(255, 45, 117, 0.15);
+  }
+  50% {
+    border-color: #ffffff;
+    box-shadow: 0 0 35px rgba(255, 45, 117, 0.75), inset 0 0 25px rgba(255, 45, 117, 0.3);
+  }
+}
+
 .arcade-frame {
-  background: var(--bg-panel);
+  background: #000000;
   border: 4px solid var(--neon-cyan);
   border-radius: var(--panel-radius);
-  box-shadow: inset 0 0 20px rgba(0, 255, 245, 0.2), 0 0 15px rgba(0, 255, 245, 0.3);
+  box-shadow: 0 0 20px rgba(0, 255, 245, 0.4), inset 0 0 15px rgba(0, 255, 245, 0.2);
   position: relative;
   overflow: hidden;
+  animation: neonPulseCardCyan 3s ease-in-out infinite;
+}
+
+/* Cuando .setup-card también tiene .arcade-frame, restaurar sus animaciones propias
+   (la regla de .arcade-frame sobreescribía cardEntrance y cardFloat) */
+.setup-card.arcade-frame {
+  border-color: var(--neon-magenta);
+  box-shadow: 0 0 18px rgba(255, 45, 117, 0.4), inset 0 0 12px rgba(255, 45, 117, 0.15);
+  animation: cardEntrance 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards,
+             neonPulseCardMagenta 3s ease-in-out infinite alternate,
+             cardFloat 3.5s ease-in-out infinite alternate;
+}
+
+/* Desactivar fondo de colores rotatorios para mantener negro puro y limpio */
+.arcade-border-glow {
+  display: none;
 }
 
 .camera-panel {
@@ -280,7 +447,7 @@ body::after {
   position: relative;
   display: flex;
   flex-direction: column;
-  background: #000;
+  background: #000000;
   border: 4px solid var(--text-dark);
   border-radius: var(--panel-radius);
 }
@@ -291,6 +458,7 @@ body::after {
   gap: 1rem;
   overflow-y: auto;
   padding-right: 0.5rem;
+  background: #000000;
 }
 .side-panel::-webkit-scrollbar {
   width: 8px;
@@ -302,29 +470,39 @@ body::after {
 
 /* SETUP & END CARDS */
 .setup-card, .ranking-card, .qr-card, .qr-card-final {
-  background: rgba(10, 14, 36, 0.9);
+  background: #000000;
   border: 4px solid var(--neon-magenta);
   padding: 2rem;
   border-radius: 12px;
-  box-shadow: var(--glow-magenta);
-  backdrop-filter: blur(10px);
   max-width: 500px;
   width: 100%;
   text-align: center;
+  position: relative;
+  z-index: 2;
+  animation: cardEntrance 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards,
+             neonPulseCardMagenta 3s ease-in-out infinite alternate,
+             cardFloat 3.5s ease-in-out infinite alternate;
+}
+
+/* Loading / error screen tiene animación pulsante cyan (arcade-frame)
+   pero con la sobreescritura anterior ya está cubierto. */
+.app-shell.setup-shell .loading-bar-fill {
+  animation: pixelLoad 2.5s steps(12) forwards;
 }
 
 /* END GAME: Two-panel layout */
 .end-left-panel,
 .end-right-panel {
   position: relative;
-  background: rgba(10, 14, 36, 0.92);
+  z-index: 2;
+  background: #000000;
   border: 4px solid var(--neon-magenta);
   padding: 1.2rem 1.5rem;
   border-radius: 12px;
-  box-shadow: var(--glow-magenta);
-  backdrop-filter: blur(10px);
   text-align: center;
   overflow-y: auto;
+  animation: cardEntrance 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards,
+             neonPulseCardMagenta 3s ease-in-out infinite alternate;
 }
 .end-left-panel {
   display: flex;
@@ -335,7 +513,8 @@ body::after {
   display: flex;
   flex-direction: column;
   border-color: var(--neon-cyan);
-  box-shadow: 0 0 25px rgba(0, 255, 245, 0.3);
+  animation: cardEntrance 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards,
+             neonPulseCardCyan 3s ease-in-out infinite alternate;
 }
 .end-right-panel .ranking-list {
   flex: 1;
@@ -357,6 +536,7 @@ body::after {
   color: var(--neon-magenta);
   font-size: 3rem;
   text-shadow: 0 0 20px var(--neon-magenta);
+  animation: gameOverSlam 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
 }
 
 /* FORMS & BUTTONS */
@@ -401,6 +581,9 @@ body::after {
 .start-button:hover, .end-game-button:hover {
   background: #fff;
   box-shadow: var(--glow-cyan);
+}
+.start-button {
+  animation: buttonGlow 2s ease-in-out infinite;
 }
 .end-game-button {
   background: var(--neon-magenta);
@@ -460,10 +643,85 @@ body::after {
 .scan-indicator {
   position: absolute;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: linear-gradient(to bottom, transparent, rgba(0, 255, 245, 0.2) 50%, rgba(0, 255, 245, 0.8) 50%, transparent);
-  background-size: 100% 200%;
-  animation: scanSweep 3s linear infinite;
-  opacity: 0.3;
+  pointer-events: none;
+}
+.scan-indicator::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  height: 3px;
+  background: var(--neon-cyan);
+  box-shadow: 0 0 8px var(--neon-cyan), 0 0 20px rgba(0, 255, 245, 0.6);
+  animation: scanSweep 1.5s ease-in-out infinite;
+}
+@keyframes scanSweep {
+  0%   { top: 0%; opacity: 1; }
+  80%  { top: 100%; opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+
+/* Flash verde de "acierto confirmado" sobre la cámara */
+.acierto-flash {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.6);
+  font-family: var(--font-arcade);
+  font-size: 3rem;
+  color: var(--neon-green);
+  text-shadow: 0 0 20px var(--neon-green), 0 0 40px var(--neon-green), 4px 4px 0 #000;
+  pointer-events: none;
+  z-index: 12;
+  animation: aciertoFlash 0.7s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  will-change: transform, opacity;
+}
+@keyframes aciertoFlash {
+  0%   { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
+  20%  { transform: translate(-50%, -50%) scale(1.15); opacity: 1; }
+  60%  { transform: translate(-50%, -50%) scale(1.0); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1.3); opacity: 0; }
+}
+
+/* Flash magenta para modo legendario (más impactante) */
+.acierto-flash.legendary {
+  color: var(--neon-yellow);
+  text-shadow: 0 0 25px var(--neon-yellow), 0 0 50px var(--neon-yellow), 4px 4px 0 #000;
+  font-size: 3.5rem;
+}
+
+/* Flash rojo de penalización por tarjeta incorrecta */
+.penalty-flash {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 0, 0, 0.35);
+  pointer-events: none;
+  z-index: 11;
+  animation: penaltyFlash 0.5s ease-out forwards;
+}
+@keyframes penaltyFlash {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.penalty-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.6);
+  font-family: var(--font-arcade);
+  font-size: 2.5rem;
+  color: var(--neon-magenta);
+  text-shadow: 0 0 20px var(--neon-magenta), 0 0 40px rgba(255, 45, 117, 0.6), 4px 4px 0 #000;
+  pointer-events: none;
+  z-index: 13;
+  animation: penaltyTextAnim 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  will-change: transform, opacity;
+}
+@keyframes penaltyTextAnim {
+  0%   { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
+  20%  { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
+  60%  { transform: translate(-50%, -50%) scale(1.0); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(0.8); opacity: 0; }
 }
 .scan-indicator-label {
   position: absolute;
@@ -539,6 +797,7 @@ body::after {
   border: 2px solid var(--neon-cyan);
   padding: 1rem;
   text-align: center;
+  animation: pulseNeon 3s ease-in-out infinite;
 }
 .score-label {
   font-family: var(--font-arcade);
@@ -557,6 +816,15 @@ body::after {
 }
 .score-value {
   display: inline-block;
+  transition: transform 0.15s ease, color 0.3s ease;
+}
+.score-value.score-bump {
+  transform: scale(1.15);
+  color: var(--neon-green);
+}
+.score-value.score-drop {
+  transform: scale(1.15);
+  color: var(--neon-magenta);
 }
 
 /* PROGRESS PIPS */
@@ -584,28 +852,40 @@ body::after {
 
 /* OBJECTIVES & BANNERS */
 .objective-box {
-  background: rgba(0,0,0,0.7);
-  border: 2px solid var(--neon-magenta);
-  padding: 1rem;
+  background: rgba(0,0,0,0.85);
+  border: 3px solid var(--neon-magenta);
+  padding: 1.2rem;
   text-align: center;
+  border-radius: 8px;
+  box-shadow: 0 0 20px rgba(255, 45, 117, 0.3), inset 0 0 15px rgba(255, 45, 117, 0.1);
+  animation: objectiveBoxGlow 3s ease-in-out infinite;
 }
 .objective-label {
   font-family: var(--font-arcade);
-  font-size: 1.2rem;
-  color: #fff;
+  font-size: 0.7rem;
+  color: var(--neon-magenta);
   text-shadow: 0 0 5px var(--neon-magenta);
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 .objective-pill, .legendary-pill, .combo-pill {
   display: inline-block;
-  padding: 4px 8px;
+  padding: 8px 18px;
   font-family: var(--font-arcade);
-  font-size: 0.6rem;
-  border-radius: 2px;
+  border-radius: 4px;
   margin-top: 0.5rem;
 }
-.objective-pill { background: var(--neon-blue); color: #fff; }
-.legendary-pill { background: var(--neon-yellow); color: #000; box-shadow: 0 0 10px var(--neon-yellow); }
-.combo-pill { background: var(--neon-magenta); color: #fff; }
+.objective-pill {
+  background: var(--neon-blue);
+  color: #fff;
+  font-size: 1.1rem;
+  letter-spacing: 1px;
+  text-shadow: 0 0 8px rgba(77, 125, 255, 0.8);
+  box-shadow: 0 0 12px rgba(77, 125, 255, 0.4), inset 0 0 8px rgba(77, 125, 255, 0.2);
+  animation: objectivePulse 2s ease-in-out infinite;
+}
+.legendary-pill { background: var(--neon-yellow); color: #000; box-shadow: 0 0 15px var(--neon-yellow); font-size: 1.1rem; letter-spacing: 1px; animation: legendaryPillPulse 1s ease-in-out infinite; }
+.combo-pill { background: var(--neon-magenta); color: #fff; font-size: 0.8rem; }
 
 .combo-banner, .legendary-banner {
   position: absolute;
@@ -615,15 +895,77 @@ body::after {
   font-family: var(--font-arcade);
   font-size: 2rem;
   color: #fff;
-  text-shadow: 4px 4px 0 #000;
+  text-shadow: 4px 4px 0 #000,
+    -8px 0 10px rgba(255, 45, 117, 0.55),
+    -16px 0 16px rgba(255, 45, 117, 0.3),
+    -24px 0 20px rgba(255, 45, 117, 0.15);
+  background: rgba(0, 0, 0, 0.72);
+  padding: 0.4rem 1rem;
+  border-radius: 6px;
+  white-space: nowrap;
   opacity: 0;
   pointer-events: none;
   z-index: 10;
-  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.3s ease;
+  will-change: transform, opacity;
 }
-.combo-active .combo-banner, .legendary-active .legendary-banner {
+.combo-active .combo-banner {
   transform: translateX(-50%) scale(1);
   opacity: 1;
+  animation: bannerWiggle 0.6s ease-in-out infinite alternate;
+}
+.legendary-active .legendary-banner {
+  transform: translateX(-50%) scale(1);
+  opacity: 1;
+  animation: bannerPulseGlow 1s ease-in-out infinite alternate;
+}
+
+@keyframes bannerWiggle {
+  from { filter: drop-shadow(0 0 4px var(--neon-magenta)); }
+  to { filter: drop-shadow(0 0 18px var(--neon-magenta)) drop-shadow(0 0 32px var(--neon-magenta)); }
+}
+
+@keyframes bannerPulseGlow {
+  from { filter: drop-shadow(0 0 6px var(--neon-yellow)); }
+  to { filter: drop-shadow(0 0 22px var(--neon-yellow)) drop-shadow(0 0 40px var(--neon-yellow)); }
+}
+
+@keyframes objectivePulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(77, 125, 255, 0.4), inset 0 0 8px rgba(77, 125, 255, 0.2); }
+  50% { box-shadow: 0 0 25px rgba(77, 125, 255, 0.7), inset 0 0 15px rgba(77, 125, 255, 0.3); }
+}
+
+@keyframes legendaryPillPulse {
+  0%, 100% { box-shadow: 0 0 15px var(--neon-yellow); transform: scale(1); }
+  50% { box-shadow: 0 0 30px var(--neon-yellow), 0 0 50px rgba(255, 229, 59, 0.4); transform: scale(1.05); }
+}
+
+@keyframes objectiveBoxGlow {
+  0%, 100% { box-shadow: 0 0 20px rgba(255, 45, 117, 0.3), inset 0 0 15px rgba(255, 45, 117, 0.1); }
+  50% { box-shadow: 0 0 35px rgba(255, 45, 117, 0.5), inset 0 0 20px rgba(255, 45, 117, 0.15); }
+}
+
+@keyframes scorePopUp {
+  0% { transform: translateY(0) scale(1); opacity: 1; }
+  100% { transform: translateY(-40px) scale(1.3); opacity: 0; }
+}
+
+.score-pop {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-arcade);
+  font-size: 1.8rem;
+  color: var(--neon-green);
+  text-shadow: 0 0 10px var(--neon-green), 3px 3px 0 #000;
+  pointer-events: none;
+  z-index: 14;
+  animation: scorePopUp 0.8s ease-out forwards;
+}
+.score-pop.penalty {
+  color: var(--neon-magenta);
+  text-shadow: 0 0 10px var(--neon-magenta), 3px 3px 0 #000;
 }
 
 /* LOADING */
@@ -668,7 +1010,11 @@ body::after {
   font-size: 0.8rem;
   white-space: nowrap;
   overflow: hidden;
-  animation: typing 2s steps(20) infinite;
+  width: 0;
+  max-width: max-content;
+  margin-left: auto;
+  margin-right: auto;
+  animation: typing 2s steps(22) infinite;
 }
 
 /* GAME OVER & RANKING */
@@ -737,6 +1083,7 @@ body::after {
   border-left: 4px solid var(--text-dark);
   font-family: var(--font-arcade);
   font-size: 0.8rem;
+  animation: rankingSlideIn 0.35s ease-out both;
 }
 .ranking-item:nth-child(1) { border-color: gold; color: gold; text-shadow: 0 0 5px gold; }
 .ranking-item:nth-child(2) { border-color: silver; color: silver; }
@@ -783,6 +1130,8 @@ body::after {
   font-family: var(--font-arcade);
   font-size: 0.8rem;
   border-radius: 4px;
+  animation: badgeDrop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both,
+             badgePulse 3s ease-in-out 0.4s infinite;
 }
 .confidence-card { margin-top: 1rem; }
 .confidence-header {
@@ -820,11 +1169,13 @@ body::after {
   animation: insertCoin 1s infinite;
 }
 .reference-card {
-  background: rgba(0,0,0,0.5);
-  padding: 0.5rem;
-  border: 1px solid var(--text-dark);
+  background: rgba(0,0,0,0.6);
+  padding: 0.8rem;
+  border: 2px solid var(--neon-cyan);
+  border-radius: 6px;
+  box-shadow: 0 0 10px rgba(0, 255, 245, 0.2);
 }
-.reference-label { font-size: 0.7rem; color: var(--text-muted); }
+.reference-label { font-size: 0.65rem; color: var(--neon-cyan); font-family: var(--font-arcade); letter-spacing: 0.5px; }
 .reference-icon {
   display: flex;
   align-items: center;
@@ -844,6 +1195,350 @@ body::after {
   filter: drop-shadow(0 0 10px var(--neon-cyan)) drop-shadow(0 0 24px rgba(0, 255, 245, 0.5));
 }
 
+/* WATERMARKS & CREDITS */
+.screen-watermark {
+  position: fixed;
+  bottom: 12px;
+  right: 18px;
+  font-family: var(--font-arcade);
+  font-size: 0.62rem;
+  color: rgba(232, 240, 255, 0.28);
+  letter-spacing: 1px;
+  pointer-events: none;
+  z-index: 9990;
+  user-select: none;
+}
+
+.header-credits {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-family: var(--font-arcade);
+  gap: 2px;
+}
+
+.credits-label {
+  font-size: 0.55rem;
+  color: var(--neon-cyan);
+  opacity: 0.85;
+  letter-spacing: 0.5px;
+}
+
+.credits-author {
+  font-size: 0.75rem;
+  color: var(--neon-yellow);
+  text-shadow: 0 0 8px rgba(255, 229, 59, 0.6);
+  letter-spacing: 0.5px;
+}
+
+.producer-badge {
+  background: #000000;
+  border: 2px solid var(--neon-cyan);
+  border-radius: 6px;
+  padding: 0.7rem 1rem;
+  margin: 0.8rem 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  box-shadow: 0 0 12px rgba(0, 255, 245, 0.25);
+  font-family: var(--font-arcade);
+}
+
+.producer-badge span {
+  font-size: 0.65rem;
+  color: var(--neon-cyan);
+  letter-spacing: 1px;
+}
+
+.producer-badge strong {
+  font-size: 0.95rem;
+  color: var(--neon-yellow);
+  text-shadow: 0 0 10px rgba(255, 229, 59, 0.7);
+}
+
+.producer-tag {
+  margin-top: 1.2rem;
+  font-family: var(--font-arcade);
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  letter-spacing: 0.8px;
+  text-align: center;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+  padding-top: 0.8rem;
+}
+
+.camera-watermark {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  font-family: var(--font-arcade);
+  font-size: 0.58rem;
+  color: rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.45);
+  padding: 3px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 5;
+  letter-spacing: 0.5px;
+}
+
+/* =========================================================
+   NUEVOS EFECTOS ARCADE (3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16)
+   Todos usan transform/opacity para no forzar layout ni pintar de más.
+   ========================================================= */
+
+/* --- 3. Score "tragamonedas" --- */
+/* No requiere clases nuevas: usa .score-value / .score-display existentes,
+   el efecto lo maneja el hook useAnimatedNumber en JS. */
+
+/* --- 4. Confetti pixelado al acertar --- */
+.confetti-burst {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 12;
+}
+.confetti-piece {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  top: 0;
+  left: 0;
+  animation: confettiFly 0.7s ease-out forwards;
+  animation-delay: calc(var(--i) * 20ms);
+}
+.confetti-piece-0 { background: var(--neon-cyan); }
+.confetti-piece-1 { background: var(--neon-magenta); }
+.confetti-piece-2 { background: var(--neon-yellow); }
+.confetti-piece-3 { background: var(--neon-green); }
+@keyframes confettiFly {
+  0%   { transform: translate(0,0) rotate(0deg) scale(1); opacity: 1; }
+  100% { transform: translate(calc((var(--i) - 4) * 22px), calc(60px + var(--i) * 4px)) rotate(360deg) scale(0.4); opacity: 0; }
+}
+
+/* --- 5. Vignette roja de urgencia (≤5s) --- */
+.urgency-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9;
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(255, 0, 60, 0.35) 100%);
+  animation: urgencyPulse 1s ease-in-out infinite;
+}
+@keyframes urgencyPulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+/* --- 7. Wipe / cortina entre pantallas --- */
+.screen-wipe {
+  position: fixed;
+  inset: 0;
+  z-index: 9995;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent 0%, var(--neon-cyan) 50%, transparent 100%);
+  transform: translateX(-100%);
+  animation: screenWipeSweep 0.5s ease-out forwards;
+  mix-blend-mode: screen;
+  opacity: 0.5;
+}
+@keyframes screenWipeSweep {
+  0%   { transform: translateX(-100%); opacity: 0.7; }
+  100% { transform: translateX(100%); opacity: 0; }
+}
+
+/* --- 8. CRT power-on al arrancar partida --- */
+.crt-power-on {
+  position: fixed;
+  inset: 0;
+  z-index: 9996;
+  pointer-events: none;
+  background: #fff;
+  animation: crtPowerOn 0.55s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+@keyframes crtPowerOn {
+  0%   { opacity: 1; transform: scaleY(0.005); }
+  40%  { opacity: 1; transform: scaleY(0.005); }
+  55%  { opacity: 1; transform: scaleY(1); }
+  70%  { opacity: 0.9; transform: scaleY(1); }
+  100% { opacity: 0; transform: scaleY(1); }
+}
+
+/* --- 9. Trail de texto en combo-banner ---
+   Aplicado directamente en la regla .combo-banner, .legendary-banner de arriba
+   (text-shadow con múltiples capas simulando motion blur). */
+
+/* --- 10. Barra de racha que se vacía --- */
+.combo-timer-bar {
+  margin-top: 6px;
+  height: 4px;
+  background: rgba(0,0,0,0.4);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.combo-timer-fill {
+  height: 100%;
+  width: 100%;
+  background: #fff;
+  transform-origin: left;
+  animation: comboTimerShrink 5s linear forwards;
+}
+@keyframes comboTimerShrink {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+
+/* --- 11. Rayos radiales en legendario --- */
+.legendary-emoji-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.legendary-rays {
+  position: absolute;
+  width: 160%;
+  height: 160%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg, var(--neon-yellow) 4deg, transparent 8deg,
+    transparent 40deg, var(--neon-yellow) 44deg, transparent 48deg,
+    transparent 80deg, var(--neon-yellow) 84deg, transparent 88deg,
+    transparent 120deg, var(--neon-yellow) 124deg, transparent 128deg,
+    transparent 160deg, var(--neon-yellow) 164deg, transparent 168deg,
+    transparent 200deg, var(--neon-yellow) 204deg, transparent 208deg,
+    transparent 240deg, var(--neon-yellow) 244deg, transparent 248deg,
+    transparent 280deg, var(--neon-yellow) 284deg, transparent 288deg,
+    transparent 320deg, var(--neon-yellow) 324deg, transparent 328deg,
+    transparent 356deg
+  );
+  opacity: 0.35;
+  animation: legendaryRaysSpin 6s linear infinite;
+  pointer-events: none;
+  z-index: -1;
+}
+@keyframes legendaryRaysSpin {
+  100% { transform: rotate(360deg); }
+}
+
+/* --- 13. Count-up en Game Over ---
+   No requiere clases nuevas: usa .final-score-box / .score-display existentes,
+   el efecto lo maneja el hook useCountUp en JS. */
+
+/* --- 14. Medalla que cae y rebota (top 3) --- */
+@keyframes medalDrop {
+  0%   { transform: translateY(-30px) scale(0.5); opacity: 0; }
+  50%  { transform: translateY(6px) scale(1.15); opacity: 1; }
+  70%  { transform: translateY(-3px) scale(0.95); }
+  85%  { transform: translateY(2px) scale(1.05); }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+.ranking-position.medal-drop {
+  display: inline-block;
+  animation: medalDrop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* --- 15. Fireworks si entra al top 3 --- */
+.fireworks-burst {
+  position: absolute;
+  top: 15%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+.firework-piece {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  top: 0;
+  left: 0;
+  animation: fireworkFly 1s ease-out forwards;
+  animation-delay: calc(var(--i) * 15ms);
+}
+.firework-piece-0 { background: var(--neon-cyan); box-shadow: 0 0 6px var(--neon-cyan); }
+.firework-piece-1 { background: var(--neon-magenta); box-shadow: 0 0 6px var(--neon-magenta); }
+.firework-piece-2 { background: var(--neon-yellow); box-shadow: 0 0 6px var(--neon-yellow); }
+.firework-piece-3 { background: var(--neon-green); box-shadow: 0 0 6px var(--neon-green); }
+@keyframes fireworkFly {
+  0%   { transform: translate(0,0) scale(1); opacity: 1; }
+  100% { transform: translate(calc((var(--i) - 6) * 18px), calc(-30px + var(--i) * 3px)) scale(0.2); opacity: 0; }
+}
+
+/* --- 16. Parpadeo ocasional de neón en arcade-frame ---
+   Aplicado directamente en la regla .arcade-frame de arriba. */
+@keyframes neonBorderFlicker {
+  0%, 4%, 8%, 100% {
+    border-color: var(--neon-cyan);
+    box-shadow: inset 0 0 20px rgba(0, 255, 245, 0.2), 0 0 15px rgba(0, 255, 245, 0.3);
+  }
+  5% { border-color: rgba(0, 255, 245, 0.4); box-shadow: none; }
+  7% { border-color: rgba(0, 255, 245, 0.7); box-shadow: inset 0 0 10px rgba(0, 255, 245, 0.1); }
+}
+
+/* --- Entrada del objetivo (pill + emoji) al cambiar de objeto --- */
+@keyframes objectiveEnter {
+  0%   { opacity: 0; transform: translateX(24px) scale(0.85); }
+  60%  { opacity: 1; transform: translateX(-4px) scale(1.05); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+.objective-pill-enter {
+  animation: objectiveEnter 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes emojiEnter {
+  0%   { opacity: 0; transform: scale(0.4) rotate(-15deg); }
+  70%  { opacity: 1; transform: scale(1.1) rotate(4deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0deg); }
+}
+.emoji-enter {
+  animation: emojiEnter 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* --- Pop del contador de racha --- */
+@keyframes comboPop {
+  0%   { transform: scale(0.5); opacity: 0; }
+  50%  { transform: scale(1.25); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.combo-pill-pop {
+  animation: comboPop 0.28s ease-out both;
+}
+
+/* --- Anillo de impacto al activarse el modo legendario --- */
+@keyframes legendaryRing {
+  0%   { opacity: 0.9; transform: scale(0.3); }
+  100% { opacity: 0; transform: scale(1.6); }
+}
+.legendary-impact-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  border: 4px solid var(--neon-yellow);
+  pointer-events: none;
+  z-index: 8;
+  animation: legendaryRing 0.6s ease-out forwards;
+}
+
+/* --- Badge drop (entrada del badge de jugador al arrancar) --- */
+@keyframes badgeDrop {
+  0%   { opacity: 0; transform: translateY(-20px); }
+  60%  { opacity: 1; transform: translateY(4px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Entrada escalonada del ranking en Game Over --- */
+@keyframes rankingSlideIn {
+  0%   { opacity: 0; transform: translateX(-16px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+
 /* MEDIA QUERIES */
 @media (max-width: 960px) {
   .app-layout { flex-direction: column; }
@@ -859,11 +1554,15 @@ body::after {
   .timer-card { font-size: 1.2rem; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, ::before, ::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
+/* En pantallas chicas o con poco refresh-rate, bajamos el coste de animaciones */
+@media (max-width: 720px) {
+  .arcade-particles,
+  .crt-overlay {
+    display: none;
   }
 }
+
+/* prefers-reduced-motion eliminado intencionalmente: este es un juego arcade
+   que requiere animaciones para funcionar. En Windows con animaciones de UI
+   desactivadas el navegador reporta prefers-reduced-motion:reduce y esta regla
+   cancelaba TODAS las animaciones CSS del juego. */

@@ -1,10 +1,2 @@
-@import "tailwindcss";
-
-html, body, #root {
-  margin: 0;
-  min-height: 100%;
-}
-
-body {
-  font-family: Inter, 'Segoe UI', sans-serif;
-}
+/* Tailwind se procesa vía el plugin @tailwindcss/vite en vite.config.js
+   Este archivo queda como placeholder; los estilos arcade están en styles.css */
