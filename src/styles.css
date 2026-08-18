@@ -253,13 +253,20 @@ body::after {
 }
 
 @keyframes cardEntrance {
-  0% { opacity: 0; transform: scale(0.9) translateY(20px); }
-  100% { opacity: 1; transform: scale(1) translateY(0); }
+  0%   { opacity: 0; transform: translateY(60px) rotate(-2deg) scale(0.88); }
+  55%  { opacity: 1; transform: translateY(-8px) rotate(0.4deg) scale(1.02); }
+  100% { opacity: 1; transform: translateY(0) rotate(0deg) scale(1); }
 }
 
 @keyframes cardFloat {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-6px) rotate(0.2deg); }
+}
+
+/* Bounce suave para la pill del objetivo (de Balatro) */
+@keyframes pillBounce {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
+  50% { transform: translateY(-4px); }
 }
 
 @keyframes gameOverSlam {
@@ -882,7 +889,7 @@ body::after {
   letter-spacing: 1px;
   text-shadow: 0 0 8px rgba(77, 125, 255, 0.8);
   box-shadow: 0 0 12px rgba(77, 125, 255, 0.4), inset 0 0 8px rgba(77, 125, 255, 0.2);
-  animation: objectivePulse 2s ease-in-out infinite;
+  animation: objectivePulse 2s ease-in-out infinite, pillBounce 3s ease-in-out infinite;
 }
 .legendary-pill { background: var(--neon-yellow); color: #000; box-shadow: 0 0 15px var(--neon-yellow); font-size: 1.1rem; letter-spacing: 1px; animation: legendaryPillPulse 1s ease-in-out infinite; }
 .combo-pill { background: var(--neon-magenta); color: #fff; font-size: 0.8rem; }
@@ -912,12 +919,21 @@ body::after {
 .combo-active .combo-banner {
   transform: translateX(-50%) scale(1);
   opacity: 1;
-  animation: bannerWiggle 0.6s ease-in-out infinite alternate;
+  /* Bounce vertical (Balatro) + glow neon */
+  animation: bannerBounce 0.55s ease-in-out infinite alternate,
+             bannerWiggle 0.6s ease-in-out infinite alternate;
 }
 .legendary-active .legendary-banner {
   transform: translateX(-50%) scale(1);
   opacity: 1;
-  animation: bannerPulseGlow 1s ease-in-out infinite alternate;
+  animation: bannerBounce 0.8s ease-in-out infinite alternate,
+             bannerPulseGlow 1s ease-in-out infinite alternate;
+}
+
+/* Bounce vertical importado de Balatro */
+@keyframes bannerBounce {
+  from { transform: translateX(-50%) scale(1) translateY(0); }
+  to   { transform: translateX(-50%) scale(1) translateY(-5px); }
 }
 
 @keyframes bannerWiggle {

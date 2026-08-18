@@ -48,6 +48,10 @@ const OPCIONES_TIEMPO = [60, 90, 120]; // Opciones de tiempo total de partida
 const RANKING_KEY = 'ucse-vision-ranking';
 const LEGENDARY_EVERY = 5;
 const LEGENDARY_SECONDS = 10;
+// Decay exponencial de puntaje: 5s de gracia, luego mitad del valor cada 8s, mínimo 100pts
+const SCORE_GRACE_SECONDS = 5;
+const SCORE_HALF_LIFE_SECONDS = 8;
+const SCORE_MIN_POINTS = 100;
 
 const formatScore = (score) => String(score).padStart(7, '0');
 
@@ -459,11 +463,24 @@ function App() {
   // flashes se disparan sincrónicamente con el mismo Date.now()
   const flashKeyCounterRef = useRef(0);
   const nextFlashKey = () => { flashKeyCounterRef.current += 1; return flashKeyCounterRef.current; };
+  // Momento en que se asignó el objeto actual (para decay de puntaje)
+  const objectStartTimeRef = useRef(Date.now());
 
   // Número de puntos animado tipo "tragamonedas" para el HUD del juego (efecto 3)
   const puntosAnimados = useAnimatedNumber(puntos, 350);
   // Conteo ascendente del puntaje final en Game Over (efecto 13)
   const puntajeAnimado = useCountUp(puntos, 1200);
+
+  // Puntaje potencial en tiempo real (decay exponencial tras gracia de 5s)
+  const [potentialScore, setPotentialScore] = useState(1000);
+
+  // Calcula los puntos reales en base al tiempo transcurrido desde que se asignó el objeto
+  const calcPotentialScore = (basePoints = 1000) => {
+    const elapsedSec = (Date.now() - objectStartTimeRef.current) / 1000;
+    if (elapsedSec <= SCORE_GRACE_SECONDS) return basePoints;
+    const decaySec = elapsedSec - SCORE_GRACE_SECONDS;
+    return Math.max(SCORE_MIN_POINTS, Math.round(basePoints * Math.pow(0.5, decaySec / SCORE_HALF_LIFE_SECONDS)));
+  };
 
   // Mantener refs sincronizados para que finalizarPartida, el loop de detección
   // y el interval del timer siempre vean los valores más recientes sin cierres viejos
@@ -475,6 +492,18 @@ function App() {
   useEffect(() => { gameEndedRef.current = gameEnded; }, [gameEnded]);
   useEffect(() => { timeLeftRef.current = timeLeft; }, [timeLeft]);
   useEffect(() => { legendaryTimeLeftRef.current = legendaryTimeLeft; }, [legendaryTimeLeft]);
+
+  // Actualizar puntaje potencial cada 200ms mientras el juego está activo
+  useEffect(() => {
+    if (!gameStarted || gameEnded) return undefined;
+    const interval = setInterval(() => {
+      // Base: legendario = 5000, normal = 1000
+      const base = legendaryModeRef.current ? 5000 : 1000;
+      setPotentialScore(calcPotentialScore(base));
+    }, 200);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameStarted, gameEnded]);
 
   // Efecto 8: dispara la animación de "power-on" tipo CRT al arrancar la partida
   useEffect(() => {
@@ -876,20 +905,34 @@ function App() {
     lastWrongClassRef.current = null;
   };
 
-  const avanzarObjeto = (puntosExtra = 1000, mensaje = '') => {
+  const avanzarObjeto = (puntosBase = 1000, mensaje = '') => {
     frameCountRef.current = 0;
     wrongFrameCountRef.current = 0;
     lastWrongClassRef.current = null;
     setProgresoEscaneo(0);
 
+    // Aplicar decay exponencial al puntaje base
+    const puntosDecay = calcPotentialScore(puntosBase);
     const multiplicador = comboActiveRef.current ? 2 : 1;
-    const puntajeReal = puntosExtra * multiplicador;
+    const puntajeReal = puntosDecay * multiplicador;
 
     setPuntos((prev) => prev + puntajeReal);
     triggerScorePop(`+${puntajeReal}`);
     triggerScoreBump('score-bump');
 
-    if (mensaje) flashStatus(mensaje);
+    if (mensaje) {
+      // Reemplazar el valor de puntos en el mensaje con el real calculado
+      const mensajeReal = mensaje.replace(/\d\.000|\d+\.\d+/g, (m) => {
+        const base = parseInt(m.replace('.', ''), 10);
+        const decayed = calcPotentialScore(base);
+        return decayed.toLocaleString('es-AR');
+      });
+      flashStatus(mensajeReal);
+    }
+
+    // Resetear timer para el próximo objeto
+    objectStartTimeRef.current = Date.now();
+    setPotentialScore(puntosBase === 5000 ? 5000 : 1000);
 
     let nuevoObjeto;
     do {
@@ -991,6 +1034,9 @@ function App() {
     setLegendaryObject(null);
     legendaryObjectRef.current = null;
     setLegendaryTimeLeft(0);
+    // Resetear timer de decay al arrancar
+    objectStartTimeRef.current = Date.now();
+    setPotentialScore(1000);
     if (comboTimerRef.current) {
       clearTimeout(comboTimerRef.current);
     }
@@ -1533,6 +1579,28 @@ function App() {
               key={`pill-${objetoActual}-${legendaryMode}`}
             >
               <span>{legendaryMode ? `★ ${DICCIONARIO[objetoActual]} ★` : DICCIONARIO[objetoActual]}</span>
+            </div>
+            {/* Indicador de puntaje potencial con decay */}
+            <div className="potential-score-indicator" style={{
+              marginTop: '0.5rem',
+              fontFamily: 'var(--font-arcade)',
+              fontSize: '0.7rem',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '0.3rem 0.5rem',
+              background: 'rgba(0,0,0,0.3)',
+              borderRadius: '4px',
+              color: potentialScore >= 900
+                ? 'var(--neon-green)'
+                : potentialScore >= 600
+                  ? 'var(--neon-yellow)'
+                  : potentialScore >= 300
+                    ? '#ff9500'
+                    : 'var(--neon-magenta)',
+            }}>
+              <span style={{ color: 'var(--text-muted)', fontSize: '0.6rem' }}>VALE:</span>
+              <span>+{potentialScore.toLocaleString('es-AR')}</span>
             </div>
           </div>
   
