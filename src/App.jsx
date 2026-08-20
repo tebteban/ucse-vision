@@ -85,11 +85,17 @@ function useAnimatedNumber(target, duration = 350) {
   return display;
 }
 
-// Cuenta de 0 al valor target una sola vez al montar (para el score final de Game Over)
-function useCountUp(target, duration = 1200) {
+// Componente dedicado para el puntaje final animado en Game Over.
+// Se monta/desmonta con cada pantalla de game-over, así la animación
+// de conteo siempre corre de 0 al puntaje real.
+function GameOverScore({ target, duration = 1200 }) {
   const [display, setDisplay] = useState(0);
 
   useEffect(() => {
+    // Resetear a 0 y animar hacia el target
+    setDisplay(0);
+    if (target <= 0) return undefined;
+
     let rafId;
     const start = performance.now();
 
@@ -102,10 +108,9 @@ function useCountUp(target, duration = 1200) {
 
     rafId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(rafId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [target, duration]);
 
-  return display;
+  return <span className="score-display">{formatScore(display)}</span>;
 }
 
 function ParticleField() {
@@ -468,8 +473,6 @@ function App() {
 
   // Número de puntos animado tipo "tragamonedas" para el HUD del juego (efecto 3)
   const puntosAnimados = useAnimatedNumber(puntos, 350);
-  // Conteo ascendente del puntaje final en Game Over (efecto 13)
-  const puntajeAnimado = useCountUp(puntos, 1200);
 
   // Puntaje potencial en tiempo real (decay exponencial tras gracia de 5s)
   const [potentialScore, setPotentialScore] = useState(1000);
@@ -1323,7 +1326,7 @@ function App() {
 
             <div className="final-score-box">
               <span>PUNTAJE FINAL</span>
-              <strong className="score-display">{formatScore(puntajeAnimado)}</strong>
+              <strong><GameOverScore target={puntos} /></strong>
             </div>
 
             <div className="final-summary">
