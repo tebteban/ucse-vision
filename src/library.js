@@ -38,11 +38,13 @@ export function loadLibrary() {
   return vacia();
 }
 
+// Devuelve false si no se pudo guardar (almacenamiento lleno o bloqueado); la app avisa sin trabarse.
 export function saveLibrary(lib) {
   try {
     localStorage.setItem(KEY, JSON.stringify(lib));
+    return true;
   } catch {
-    alert('No se pudo guardar la biblioteca (almacenamiento lleno). Exportala como archivo.');
+    return false;
   }
 }
 

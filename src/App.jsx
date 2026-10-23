@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { motion, AnimatePresence, MotionConfig } from 'motion/react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence, MotionConfig, useSpring, useTransform } from 'motion/react';
 import {
   Camera, ScanSearch, GraduationCap, LibraryBig, Loader2, Plus, Download, Upload, RotateCcw, Trash2,
-  ChevronDown, Aperture, X, Zap, MousePointerClick, LayoutGrid, Cpu, CircuitBoard, HeartPulse, FlaskConical, Cog,
+  ChevronDown, Aperture, X, Zap, MousePointerClick, LayoutGrid, Cpu, CircuitBoard, HeartPulse, FlaskConical, Cog, RefreshCw,
 } from 'lucide-react';
-import { loadEmbedder, cropToCanvas, embed } from './embedder.js';
-import { cargarSam, analizarEscena, objetoEn } from './segmentador.js';
-import { crearSeguidor } from './seguidor.js';
+import { loadEmbedder, cropToCanvas, embed, reconocimientoOcupado, _matarReconocimiento } from './embedder.js';
+import { cargarSam, analizarEscena, objetoEn, alCambiarDispositivo, alPerderEscena, _matarSegmentacion } from './segmentador.js';
+import { crearSeguidor, soltarSeguidor } from './seguidor.js';
+import { diferencia, diferenciaLocal, MINI_W, MINI_H } from './seguimiento.js';
 import { loadLibrary, saveLibrary, normalizar, match, efectiva, soloCategoria, restaurarBase, borrarObjeto, baseIds } from './library.js';
 import { Numero, Anillo, Splash } from './ui.jsx';
 
@@ -17,6 +18,7 @@ const CAMBIO_LOCAL = 10; // ídem, pero solo alrededor del punto del clic
 const QUIETA = 4; // diferencia entre cuadros seguidos por debajo de la cual la imagen está quieta (ruido de cámara ~1-3)
 const REIDENTIFICAR_MS = 2500;
 const SPLASH_MIN_MS = 1800;
+const REINTENTO_CAMARA_MS = 2500;
 const CATEGORIAS = [
   ['', 'Todas', LayoutGrid],
   ['Informática', 'Informática', Cpu],
@@ -33,35 +35,24 @@ const TABS = [
   ['biblioteca', 'Biblioteca', LibraryBig],
 ];
 const SUAVE = [0.22, 1, 0.36, 1];
+const RESORTE = { stiffness: 500, damping: 45, mass: 0.6 };
 const teachVacio = { target: null, nombre: '', categoria: 'Informática', resumen: '', detalle: '', muestras: [], miniaturas: [] };
+const SIN_RESUMEN = 'Objeto enseñado en vivo con la cámara.';
+const SIN_DETALLE = 'Este objeto se agregó a la biblioteca durante una demostración. Podés sumarle más muestras desde Enseñar para mejorar su reconocimiento.';
+const MODO_PRUEBA = new URLSearchParams(location.search).has('test');
 
 // Miniatura gris 64×36 del video, para medir cuánto cambió la escena.
 const miniatura = (() => {
   const c = document.createElement('canvas');
-  c.width = 64;
-  c.height = 36;
+  c.width = MINI_W;
+  c.height = MINI_H;
   const g = c.getContext('2d', { willReadFrequently: true });
   return (video) => {
-    g.drawImage(video, 0, 0, 64, 36);
-    const d = g.getImageData(0, 0, 64, 36).data;
-    return Uint8Array.from({ length: 64 * 36 }, (_, i) => (d[4 * i] + d[4 * i + 1] + d[4 * i + 2]) / 3);
+    g.drawImage(video, 0, 0, MINI_W, MINI_H);
+    const d = g.getImageData(0, 0, MINI_W, MINI_H).data;
+    return Uint8Array.from({ length: MINI_W * MINI_H }, (_, i) => (d[4 * i] + d[4 * i + 1] + d[4 * i + 2]) / 3);
   };
 })();
-const diferencia = (a, b) => a.reduce((s, x, i) => s + Math.abs(x - b[i]), 0) / a.length;
-// Igual, pero en una ventana de la miniatura alrededor de un punto del video (~1/4 del ancho).
-const diferenciaLocal = (a, b, { px, py }, v) => {
-  const cx = Math.round((px / v.videoWidth) * 64);
-  const cy = Math.round((py / v.videoHeight) * 36);
-  let s = 0;
-  let n = 0;
-  for (let y = Math.max(0, cy - 6); y <= Math.min(35, cy + 6); y++) {
-    for (let x = Math.max(0, cx - 8); x <= Math.min(63, cx + 8); x++) {
-      s += Math.abs(a[y * 64 + x] - b[y * 64 + x]);
-      n++;
-    }
-  }
-  return s / n;
-};
 
 // Agranda un poco la caja para que el reconocimiento vea algo de contexto.
 const conMargen = (b, v) => {
@@ -76,16 +67,20 @@ const aparecer = {
   visible: (i = 0) => ({ opacity: 1, y: 0, transition: { delay: i * 0.06, duration: 0.4, ease: SUAVE } }),
 };
 
+const parrafos = (texto) => texto.split(/\n+/).filter(Boolean);
+
 export default function App() {
   const videoRef = useRef(null);
   const camRef = useRef(null);
   const dragRef = useRef(null);
-  const accionesRef = useRef({}); // el intervalo del análisis necesita la versión vigente de segmentar
+  const accionesRef = useRef({}); // los intervalos necesitan la versión vigente de estas funciones
   const seguidorRef = useRef(null);
-  const cajaRef = useRef(null);
+  const cajaRef = useRef(null); // {x,y,w,h,perdido} en px del video; la posición NO vive en el estado de React
+  const generacion = useRef(0); // cambia al fijar o soltar: descarta respuestas que llegan tarde
   const escenaRef = useRef({ hay: false, ocupada: false, gris: null, anterior: null, pendiente: null });
   const tabRef = useRef('identificar');
-  const identRef = useRef(null);
+  const avisoRef = useRef(0);
+  const segRef = useRef({ enCurso: false, siguiente: null }); // una segmentación a la vez; del resto, solo el último clic
 
   const [lib, setLib] = useState(loadLibrary); // solo lo propio; ver library.js
   const [categoria, setCategoria] = useState(''); // '' = todas
@@ -98,90 +93,187 @@ export default function App() {
   const [dispSam, setDispSam] = useState('');
   const [camaras, setCamaras] = useState([]);
   const [camaraId, setCamaraId] = useState('');
-  const [camLista, setCamLista] = useState(false);
+  const [estadoCam, setEstadoCam] = useState('iniciando'); // iniciando | activa | desconectada | error
   const [errorCam, setErrorCam] = useState('');
+  const [intentoCam, setIntentoCam] = useState(0);
   const [splashMin, setSplashMin] = useState(true);
   const [dims, setDims] = useState({ w: 16, h: 9 });
-  const [caja, setCaja] = useState(null); // {x,y,w,h,perdido} en px del video
-  const [fijado, setFijado] = useState(0); // contador: cambia en cada fijado nuevo para repetir la animación
+  const [fijado, setFijado] = useState(null); // {n, perdido} mientras hay un objeto fijado; n cambia en cada fijado
   const [arrastre, setArrastre] = useState(null); // rectángulo en curso, en px de pantalla
   const [buscando, setBuscando] = useState(null); // {x,y} en px de pantalla mientras se segmenta un clic
   const [ondas, setOndas] = useState([]);
   const [flash, setFlash] = useState(0);
   const [aviso, setAviso] = useState('');
   const [busy, setBusy] = useState(false);
+  const [falloIdent, setFalloIdent] = useState(false); // la última identificación falló (p. ej. se reinició el worker)
   const [inferencia, setInferencia] = useState(0);
   const [tab, setTab] = useState('identificar');
   const [res, setRes] = useState(null); // { ranking, indice }
-  const [verMas, setVerMas] = useState(false);
+  const [verMas, setVerMas] = useState(true);
   const [teach, setTeach] = useState(teachVacio);
+  const [porBorrar, setPorBorrar] = useState(null);
+
+  // posición del recuadro en % del video, animada sin pasar por React (sin re-render en cada cuadro)
+  const mx = useSpring(0, RESORTE);
+  const my = useSpring(0, RESORTE);
+  const mw = useSpring(0, RESORTE);
+  const mh = useSpring(0, RESORTE);
+  const left = useTransform(mx, (v) => `${v}%`);
+  const top = useTransform(my, (v) => `${v}%`);
+  const width = useTransform(mw, (v) => `${v}%`);
+  const height = useTransform(mh, (v) => `${v}%`);
 
   const base = useMemo(() => efectiva(lib), [lib]);
   const activa = useMemo(() => soloCategoria(base, categoria), [base, categoria]);
 
+  const avisar = useCallback((texto) => {
+    avisoRef.current = Date.now();
+    setAviso(texto);
+  }, []);
+
   const update = (next) => {
     setLib(next);
-    saveLibrary(next);
+    if (!saveLibrary(next)) avisar('No se pudo guardar la biblioteca en esta PC. Exportala como archivo para no perderla.');
   };
 
-  // --- modelos ---
-  useEffect(() => {
-    const blank = document.createElement('canvas');
-    blank.width = blank.height = 224;
+  // --- modelos (con reintento manual si fallan) ---
+  const cargarModelos = useCallback(() => {
     loadEmbedder()
-      .then(() => embed(blank)) // la primera inferencia es la lenta: la hacemos antes de la demo
       .then(() => setModelo('listo'))
-      .catch(() => setModelo('error'));
+      .catch((e) => {
+        console.error('Reconocimiento:', e);
+        setModelo('error');
+      });
     cargarSam()
       .then((d) => {
         setDispSam(d === 'webgpu' ? 'GPU' : 'CPU');
         setSam('listo');
       })
-      .catch(() => setSam('error'));
-    const t = setTimeout(() => setSplashMin(false), SPLASH_MIN_MS);
-    return () => clearTimeout(t);
+      .catch((e) => {
+        console.error('Segmentación:', e);
+        setSam('error');
+      });
   }, []);
 
-  // --- cámara ---
+  useEffect(() => {
+    alCambiarDispositivo((d) => setDispSam(d === 'webgpu' ? 'GPU' : 'CPU'));
+    alPerderEscena(() => {
+      escenaRef.current.hay = false;
+      setEscena('sin');
+    });
+    cargarModelos();
+    const t = setTimeout(() => setSplashMin(false), SPLASH_MIN_MS);
+    return () => clearTimeout(t);
+  }, [cargarModelos]);
+
+  // --- cámara: reconexión automática si se desconecta o la usa otro programa ---
   useEffect(() => {
     let stream;
     let cancelado = false;
+    let reintento;
+    const reintentar = () => {
+      clearTimeout(reintento);
+      reintento = setTimeout(() => !cancelado && setIntentoCam((n) => n + 1), REINTENTO_CAMARA_MS);
+    };
     (async () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: camaraId ? { deviceId: { exact: camaraId }, width: 1280, height: 720 } : { width: 1280, height: 720 },
         });
         if (cancelado) return stream.getTracks().forEach((t) => t.stop());
+        const [pista] = stream.getVideoTracks();
+        pista.addEventListener('ended', () => {
+          if (cancelado) return;
+          setEstadoCam('desconectada');
+          setErrorCam('La cámara se desconectó. Reintentando…');
+          reintentar();
+        });
         videoRef.current.srcObject = stream;
+        escenaRef.current.hay = false; // la escena analizada era de otra imagen
+        setEstadoCam('activa');
         setErrorCam('');
-        setCamLista(true);
         setCamaras((await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput'));
       } catch (e) {
-        setErrorCam(e.message || 'No se pudo abrir la cámara');
+        if (cancelado) return;
+        if (e.name === 'OverconstrainedError' && camaraId) return setCamaraId(''); // la cámara elegida ya no existe
+        setEstadoCam('error');
+        setErrorCam(
+          e.name === 'NotReadableError' ? 'La cámara está en uso por otro programa. Reintentando…'
+          : e.name === 'NotFoundError' ? 'No se encontró ninguna cámara. Conectá una; se detecta sola.'
+          : e.name === 'NotAllowedError' ? 'No hay permiso para usar la cámara.'
+          : `No se pudo abrir la cámara (${e.message || e.name}). Reintentando…`,
+        );
+        if (e.name !== 'NotAllowedError') reintentar();
       }
     })();
     return () => {
       cancelado = true;
+      clearTimeout(reintento);
       stream?.getTracks().forEach((t) => t.stop());
     };
-  }, [camaraId]);
+  }, [camaraId, intentoCam]);
 
-  // --- seguimiento de la caja ---
-  const fijarCaja = (c) => {
-    cajaRef.current = c;
-    setCaja(c);
+  // Cámara enchufada o desenchufada: se actualiza la lista y, si no había imagen, se reintenta ya.
+  useEffect(() => {
+    const md = navigator.mediaDevices;
+    const alCambiar = async () => {
+      const lista = (await md.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+      setCamaras(lista);
+      setCamaraId((id) => (id && !lista.some((d) => d.deviceId === id) ? '' : id));
+      setEstadoCam((e) => {
+        if (e !== 'activa') setIntentoCam((n) => n + 1);
+        return e;
+      });
+    };
+    md?.addEventListener('devicechange', alCambiar);
+    return () => md?.removeEventListener('devicechange', alCambiar);
+  }, []);
+
+  // --- recuadro ---
+  const moverMarco = (c, saltar = false) => {
+    const v = videoRef.current;
+    const pos = [[mx, (c.x / v.videoWidth) * 100], [my, (c.y / v.videoHeight) * 100], [mw, (c.w / v.videoWidth) * 100], [mh, (c.h / v.videoHeight) * 100]];
+    for (const [m, val] of pos) (saltar ? m.jump(val) : m.set(val));
   };
 
+  // Seguimiento: un paso por cada cuadro nuevo de la cámara, sin solapar pasos.
   useEffect(() => {
-    const id = setInterval(() => {
+    const v = videoRef.current;
+    let id;
+    let vivo = true;
+    let enCurso = false;
+    const cb = () => {
+      if (!vivo) return;
+      id = v.requestVideoFrameCallback(cb);
       const s = seguidorRef.current;
-      if (!s || !videoRef.current?.videoWidth) return;
-      const r = s.paso();
-      const prev = cajaRef.current;
-      if (prev && Math.hypot(r.x - prev.x, r.y - prev.y) < 0.5 && prev.perdido === !r.ok) return;
-      fijarCaja({ x: r.x, y: r.y, w: r.w, h: r.h, perdido: !r.ok });
-    }, 70);
-    return () => clearInterval(id);
+      if (!s || enCurso || !v.videoWidth) return;
+      enCurso = true;
+      const gen = generacion.current;
+      s.paso()
+        .then((r) => {
+          if (gen !== generacion.current || !cajaRef.current) return;
+          const perdido = !r.ok;
+          cajaRef.current = { x: r.x, y: r.y, w: r.w, h: r.h, perdido };
+          moverMarco(r);
+          setFijado((f) => (f && f.perdido !== perdido ? { ...f, perdido } : f));
+        })
+        .catch(() => {
+          // el worker se reinició: el objeto queda donde estaba, marcado como perdido
+          if (gen === generacion.current && cajaRef.current) {
+            seguidorRef.current = null;
+            cajaRef.current = { ...cajaRef.current, perdido: true };
+            setFijado((f) => f && { ...f, perdido: true });
+          }
+        })
+        .finally(() => (enCurso = false));
+    };
+    id = v.requestVideoFrameCallback(cb);
+    return () => {
+      vivo = false;
+      v.cancelVideoFrameCallback(id);
+    };
+    // moverMarco solo usa refs y valores animados estables
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // --- análisis de escena en segundo plano (SAM calcula en un worker; el clic luego es rápido) ---
@@ -207,12 +299,18 @@ export default function App() {
         setEscena('lista');
         const p = e.pendiente;
         // el clic se resuelve con esta escena si se analizó después del clic o si la zona no cambió
-        if (p && (inicio >= p.desde || diferenciaLocal(ahora, p.gris, p, v) <= CAMBIO_LOCAL)) {
+        if (p && (inicio >= p.desde || diferenciaLocal(ahora, p.gris, p.fx, p.fy) <= CAMBIO_LOCAL)) {
           e.pendiente = null;
-          accionesRef.current.segmentar(p.px, p.py);
+          accionesRef.current.segmentar(p.px, p.py, p.reintento);
         }
-      } catch {
-        setSam('error');
+      } catch (err) {
+        console.error('Análisis de escena:', err);
+        e.hay = false; // el worker se reinicia solo; se vuelve a analizar en el próximo ciclo
+        if (e.pendiente) {
+          e.pendiente = null;
+          setBuscando(null);
+          accionesRef.current.avisar('La selección por clic tuvo un problema y se reinició. Probá de nuevo.');
+        }
       } finally {
         e.ocupada = false;
         setAnalizando(false);
@@ -225,27 +323,47 @@ export default function App() {
   const recorte = (c) => cropToCanvas(videoRef.current, conMargen(c, videoRef.current));
 
   async function identificar(c, silencioso = false) {
-    if (modelo !== 'listo') return;
+    if (modelo !== 'listo' || !videoRef.current?.videoWidth) return;
+    if (silencioso && reconocimientoOcupado()) return; // no se encolan re-identificaciones
+    const gen = generacion.current;
     if (!silencioso) setBusy(true);
     try {
       const t0 = performance.now();
-      const ranking = match(activa, await embed(recorte(c)));
+      const vector = await embed(recorte(c));
+      if (gen !== generacion.current) return; // se soltó o se fijó otro objeto mientras tanto
+      const ranking = match(activa, vector);
       setInferencia(Math.round(performance.now() - t0));
-      setRes((r) => (silencioso && r ? { ranking, indice: Math.min(r.indice, ranking.length - 1) } : { ranking, indice: 0 }));
-      if (!silencioso) setVerMas(false);
+      setFalloIdent(false);
+      setRes((r) => (silencioso && r ? { ranking, indice: Math.min(r.indice, Math.max(0, ranking.length - 1)) } : { ranking, indice: 0 }));
+      if (!silencioso) setVerMas(true);
+    } catch (e) {
+      console.error('Reconocimiento:', e);
+      if (!silencioso) {
+        setFalloIdent(true); // la re-identificación periódica lo vuelve a intentar sola
+        avisar('No se pudo reconocer el objeto; se reintenta solo en unos segundos.');
+      }
     } finally {
       if (!silencioso) setBusy(false);
     }
   }
 
   // Fija el objeto: dibuja la caja, empieza a seguirlo y lo identifica.
-  function bloquear(c) {
-    seguidorRef.current = crearSeguidor(videoRef.current, c);
-    fijarCaja({ ...c, perdido: false });
-    setFijado((n) => n + 1);
+  async function bloquear(c) {
+    const gen = ++generacion.current;
+    seguidorRef.current = null;
+    cajaRef.current = { ...c, perdido: false };
+    moverMarco(c, true);
+    setFijado({ n: gen, perdido: false });
+    setFalloIdent(false);
     setBuscando(null);
     setAviso('');
-    if (tab === 'identificar') identificar(c);
+    if (tabRef.current === 'identificar') identificar(c);
+    try {
+      const s = await crearSeguidor(videoRef.current, c);
+      if (gen === generacion.current) seguidorRef.current = s;
+    } catch (e) {
+      console.error('Seguimiento:', e); // el recuadro queda fijo en su lugar
+    }
   }
 
   // Clic: si la zona del objeto no cambió desde el último análisis, se segmenta al instante.
@@ -254,42 +372,66 @@ export default function App() {
     const e = escenaRef.current;
     const v = videoRef.current;
     const ahora = miniatura(v);
-    if (e.hay && !e.ocupada && diferenciaLocal(e.gris, ahora, { px, py }, v) <= CAMBIO_LOCAL) return segmentar(px, py);
-    e.pendiente = { px, py, gris: ahora, desde: performance.now() };
+    const fx = px / v.videoWidth;
+    const fy = py / v.videoHeight;
+    if (e.hay && !e.ocupada && diferenciaLocal(e.gris, ahora, fx, fy) <= CAMBIO_LOCAL) return segmentar(px, py);
+    e.pendiente = { px, py, fx, fy, gris: ahora, desde: performance.now() };
   }
 
-  async function segmentar(px, py) {
+  async function segmentar(px, py, reintento = false) {
+    const seg = segRef.current;
+    if (seg.enCurso) {
+      seg.siguiente = [px, py, reintento]; // clics rápidos: los intermedios se descartan
+      return;
+    }
+    seg.enCurso = true;
+    const gen = generacion.current;
     try {
       const c = await objetoEn(px, py);
+      if (gen !== generacion.current || seg.siguiente) return; // ya hubo otro clic: manda el último
       if (c) bloquear(c);
       else {
         setBuscando(null);
-        setAviso('No encontré un objeto ahí. Probá arrastrando para encuadrarlo.');
+        avisar('No encontré un objeto ahí. Probá arrastrando para encuadrarlo.');
       }
-    } catch {
+    } catch (e) {
+      if (seg.siguiente) return;
+      console.error('Segmentación:', e);
+      const esc = escenaRef.current;
+      esc.hay = false;
+      if (!reintento && gen === generacion.current) {
+        // típicamente el worker se reinició y perdió la escena: se analiza de nuevo y se reintenta una vez
+        const v = videoRef.current;
+        esc.pendiente = { px, py, fx: px / v.videoWidth, fy: py / v.videoHeight, gris: miniatura(v), desde: performance.now(), reintento: true };
+        return;
+      }
       setBuscando(null);
-      setAviso('No se pudo segmentar. Encuadralo arrastrando el mouse.');
+      avisar('No se pudo detectar el objeto. Probá de nuevo o encuadralo arrastrando el mouse.');
+    } finally {
+      seg.enCurso = false;
+      const sig = seg.siguiente;
+      seg.siguiente = null;
+      if (sig) accionesRef.current.segmentar(...sig);
     }
   }
 
   useEffect(() => {
     // los intervalos leen siempre la versión más reciente de estas funciones y del estado
     tabRef.current = tab;
-    identRef.current = identificar;
-    accionesRef.current = { segmentar };
+    accionesRef.current = { segmentar, identificar, avisar };
   });
 
   // Re-identifica de vez en cuando mientras se sigue el objeto, y al cambiar de categoría.
   useEffect(() => {
     const id = setInterval(() => {
       const c = cajaRef.current;
-      if (c && !c.perdido && tabRef.current === 'identificar') identRef.current?.(c, true);
+      if (c && !c.perdido && tabRef.current === 'identificar') accionesRef.current.identificar(c, true);
     }, REIDENTIFICAR_MS);
     return () => clearInterval(id);
   }, []);
   useEffect(() => {
     const c = cajaRef.current;
-    if (c && !c.perdido && tabRef.current === 'identificar') identRef.current?.(c);
+    if (c && !c.perdido && tabRef.current === 'identificar') accionesRef.current.identificar(c);
   }, [categoria]);
 
   useEffect(() => {
@@ -298,10 +440,41 @@ export default function App() {
     return () => clearTimeout(t);
   }, [aviso]);
 
+  useEffect(() => {
+    if (!porBorrar) return;
+    const t = setTimeout(() => setPorBorrar(null), 3000);
+    return () => clearTimeout(t);
+  }, [porBorrar]);
+
+  // Errores no previstos: se registran y se avisa sin cortar la app.
+  useEffect(() => {
+    const alError = (e) => {
+      const msg = String(e.reason?.message ?? e.message ?? e.reason ?? '');
+      if (msg.includes('ResizeObserver')) return;
+      console.error('Error no previsto:', e.reason ?? e.error ?? e);
+      if (Date.now() - avisoRef.current > 5000) avisar('Ocurrió un error inesperado, pero la app sigue funcionando.');
+    };
+    window.addEventListener('error', alError);
+    window.addEventListener('unhandledrejection', alError);
+    return () => {
+      window.removeEventListener('error', alError);
+      window.removeEventListener('unhandledrejection', alError);
+    };
+  }, [avisar]);
+
+  // Ganchos para las pruebas de tolerancia a fallos (solo con ?test).
+  useEffect(() => {
+    if (!MODO_PRUEBA) return;
+    window.__ucse = { matarReconocimiento: _matarReconocimiento, matarSegmentacion: _matarSegmentacion };
+  }, []);
+
   function soltar() {
+    generacion.current++;
     seguidorRef.current = null;
+    cajaRef.current = null;
     escenaRef.current.pendiente = null;
-    fijarCaja(null);
+    soltarSeguidor();
+    setFijado(null);
     setBuscando(null);
     setRes(null);
     setAviso('');
@@ -315,6 +488,7 @@ export default function App() {
   // pantalla -> video (escalas por eje, por si el contenedor no conserva la proporción)
   const escala = () => ({ kx: videoRef.current.videoWidth / camRef.current.clientWidth, ky: videoRef.current.videoHeight / camRef.current.clientHeight });
   const onDown = (ev) => {
+    if (ev.button !== 0) return;
     camRef.current.setPointerCapture(ev.pointerId);
     dragRef.current = pos(ev);
     setArrastre(null);
@@ -329,12 +503,12 @@ export default function App() {
     const a = dragRef.current;
     dragRef.current = null;
     setArrastre(null);
-    if (!a || !videoRef.current?.videoWidth) return;
+    if (!a || !videoRef.current?.videoWidth || estadoCam !== 'activa') return;
     const b = pos(ev);
     const { kx, ky } = escala();
     if (Math.hypot(b.x - a.x, b.y - a.y) < MIN_ARRASTRE) {
-      setOndas((o) => [...o, { id: Date.now(), ...b }]);
-      if (sam !== 'listo') return setAviso('La selección por clic todavía no está lista. Encuadrá arrastrando el mouse.');
+      setOndas((o) => [...o.slice(-4), { id: performance.now(), ...b }]);
+      if (sam !== 'listo') return avisar('La selección por clic todavía no está lista. Encuadrá arrastrando el mouse.');
       return clicEn(b.x * kx, b.y * ky, b);
     }
     bloquear({ x: Math.min(a.x, b.x) * kx, y: Math.min(a.y, b.y) * ky, w: Math.abs(a.x - b.x) * kx, h: Math.abs(a.y - b.y) * ky });
@@ -346,13 +520,17 @@ export default function App() {
     setBusy(true);
     try {
       for (let i = 0; i < n; i++) {
+        if (!cajaRef.current || !videoRef.current?.videoWidth) break; // se soltó el objeto o se cortó la cámara
         const canvas = recorte(cajaRef.current);
-        const v = await embed(canvas);
         const mini = canvas.toDataURL('image/jpeg', 0.7);
+        const v = await embed(canvas);
         setFlash((f) => f + 1);
         setTeach((t) => ({ ...t, muestras: [...t.muestras, v], miniaturas: [...t.miniaturas, mini] }));
-        if (i < n - 1) await new Promise((r) => setTimeout(r, 400));
+        if (i < n - 1) await new Promise((r) => setTimeout(r, 300));
       }
+    } catch (e) {
+      console.error('Captura:', e);
+      avisar('Se interrumpió la captura de muestras. Las ya tomadas se conservan.');
     } finally {
       setBusy(false);
     }
@@ -365,7 +543,7 @@ export default function App() {
     if (!id) {
       const slug = nombre.trim().toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'objeto';
       id = base.objetos.some((o) => o.id === slug) ? `${slug}-${Date.now().toString(36)}` : slug;
-      objetos = [...objetos, { id, nombre: nombre.trim(), categoria: teach.categoria, resumen: resumen.trim(), detalle: detalle.trim() }];
+      objetos = [...objetos, { id, nombre: nombre.trim(), categoria: teach.categoria, resumen: resumen.trim() || SIN_RESUMEN, detalle: detalle.trim() || SIN_DETALLE }];
     }
     update({ ...lib, objetos, muestras: [...lib.muestras, ...muestras.map((v) => ({ id, v }))] });
     setTeach(teachVacio);
@@ -380,7 +558,7 @@ export default function App() {
     a.href = URL.createObjectURL(new Blob([JSON.stringify(lib)], { type: 'application/json' }));
     a.download = 'biblioteca-ucse-vision.json';
     a.click();
-    URL.revokeObjectURL(a.href);
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
   async function importar(e) {
@@ -388,23 +566,31 @@ export default function App() {
     e.target.value = '';
     if (!f) return;
     try {
-      update(normalizar(JSON.parse(await f.text())));
+      if (f.size > 50e6) throw new Error('El archivo es demasiado grande para ser una biblioteca.');
+      const nueva = normalizar(JSON.parse(await f.text()));
+      update(nueva);
+      const n = nueva.objetos.length;
+      const m = nueva.muestras.length;
+      avisar(`Biblioteca importada: ${n} ${n === 1 ? 'objeto propio' : 'objetos propios'} y ${m} ${m === 1 ? 'muestra' : 'muestras'}.`);
     } catch (err) {
-      alert(err.message);
+      avisar(err instanceof SyntaxError ? 'El archivo no es un JSON válido.' : err.message);
     }
   }
 
   function borrar(o) {
-    if (confirm(`¿Borrar las muestras de "${o.nombre}"?`)) update(borrarObjeto(lib, o.id));
+    if (porBorrar !== o.id) return setPorBorrar(o.id);
+    setPorBorrar(null);
+    update(borrarObjeto(lib, o.id));
   }
 
   const cuentas = base.muestras.reduce((c, m) => ((c[m.id] = (c[m.id] || 0) + 1), c), {});
   const maxCuenta = Math.max(1, ...Object.values(cuentas));
   const actual = res?.ranking[res.indice];
   const reconocido = actual && actual.score >= umbral;
-  const etiqueta = !caja ? '' : caja.perdido ? 'Objeto perdido' : busy ? 'Analizando…' : tab !== 'identificar' ? 'Objeto fijado' : actual ? (reconocido ? actual.objeto.nombre : 'No reconocido') : '';
-  const splash = splashMin || modelo === 'cargando' || !(camLista || errorCam);
-  const pct = (v, total) => `${(v / (total || 1)) * 100}%`;
+  const perdido = fijado?.perdido;
+  const etiqueta = !fijado ? '' : perdido ? 'Objeto perdido' : busy && !res ? 'Analizando…' : tab !== 'identificar' ? 'Objeto fijado' : actual ? (reconocido ? actual.objeto.nombre : 'No reconocido') : falloIdent ? 'Reintentando…' : 'Analizando…';
+  const mostrarResumen = fijado && !perdido && tab === 'identificar' && reconocido;
+  const splash = splashMin || modelo === 'cargando' || estadoCam === 'iniciando';
   const esperandoEscena = analizando || escena === 'sin';
   const nombreCategoria = CATEGORIAS.find(([k]) => k === categoria)[1];
 
@@ -414,7 +600,7 @@ export default function App() {
         visible={splash}
         pasos={[
           ['Modelo de reconocimiento', modelo !== 'cargando'],
-          ['Cámara', camLista || !!errorCam],
+          ['Cámara', estadoCam !== 'iniciando'],
           ['Modelo de segmentación', sam !== 'cargando'],
         ]}
       />
@@ -441,14 +627,23 @@ export default function App() {
             ))}
           </nav>
           <div className="estados" role="status" aria-live="polite">
-            <span className={`estado ${modelo}`}>
-              {modelo === 'cargando' ? <Loader2 size={14} className="giro" aria-hidden="true" /> : <i className="punto" />}
-              {modelo === 'cargando' ? 'Cargando modelo' : modelo === 'error' ? 'Error de modelo' : 'Reconocimiento listo'}
-            </span>
-            <span className={`estado ${sam === 'error' ? 'error' : esperandoEscena || sam === 'cargando' ? 'cargando' : 'listo'}`}>
-              {sam === 'cargando' || (sam === 'listo' && esperandoEscena) ? <Loader2 size={14} className="giro" aria-hidden="true" /> : <i className="punto" />}
-              {sam === 'error' ? 'Sin selección por clic' : sam === 'cargando' ? 'Cargando selección' : escena === 'sin' ? 'Preparando escena' : analizando ? 'Actualizando escena' : 'Escena lista'}
-            </span>
+            {modelo === 'error' || sam === 'error' ? (
+              <button className="estado error" onClick={() => { setModelo('cargando'); setSam('cargando'); cargarModelos(); }}>
+                <RefreshCw size={14} aria-hidden="true" />
+                {modelo === 'error' ? 'Error de reconocimiento' : 'Error de selección'} · Reintentar
+              </button>
+            ) : (
+              <>
+                <span className={`estado ${modelo}`}>
+                  {modelo === 'cargando' ? <Loader2 size={14} className="giro" aria-hidden="true" /> : <i className="punto" />}
+                  {modelo === 'cargando' ? 'Cargando modelo' : 'Reconocimiento listo'}
+                </span>
+                <span className={`estado ${esperandoEscena || sam === 'cargando' ? 'cargando' : 'listo'}`}>
+                  {sam === 'cargando' || esperandoEscena ? <Loader2 size={14} className="giro" aria-hidden="true" /> : <i className="punto" />}
+                  {sam === 'cargando' ? 'Cargando selección' : escena === 'sin' ? 'Preparando escena' : analizando ? 'Actualizando escena' : 'Escena lista'}
+                </span>
+              </>
+            )}
           </div>
         </header>
 
@@ -460,7 +655,7 @@ export default function App() {
                 <select value={camaraId} onChange={(e) => setCamaraId(e.target.value)} aria-label="Cámara">
                   <option value="">Cámara predeterminada</option>
                   {camaras.map((d, i) => (
-                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Cámara ${i + 1}`}</option>
+                    <option key={d.deviceId || i} value={d.deviceId}>{d.label || `Cámara ${i + 1}`}</option>
                   ))}
                 </select>
                 <ChevronDown size={16} aria-hidden="true" />
@@ -470,7 +665,7 @@ export default function App() {
                 {tab === 'ensenar' ? 'Hacé clic en el objeto y capturá muestras' : 'Hacé clic sobre un objeto, o arrastrá para encuadrarlo'}
               </span>
               <AnimatePresence>
-                {caja && (
+                {fijado && (
                   <motion.button className="pill sutil" onClick={soltar} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}>
                     <X size={16} aria-hidden="true" /> Soltar objeto
                   </motion.button>
@@ -495,19 +690,14 @@ export default function App() {
               />
 
               <div className="flotantes" aria-hidden="true">
-                <span className="flotante"><i className="vivo" /> En vivo</span>
+                <span className="flotante"><i className={estadoCam === 'activa' ? 'vivo' : 'vivo apagado'} /> {estadoCam === 'activa' ? 'En vivo' : 'Sin señal'}</span>
                 <span className="flotante">{TABS.find(([k]) => k === tab)[1]} · {nombreCategoria}</span>
               </div>
 
-              {caja && (
-                <motion.div
-                  className={caja.perdido ? 'marco perdido' : 'marco'}
-                  initial={false}
-                  animate={{ left: pct(caja.x, dims.w), top: pct(caja.y, dims.h), width: pct(caja.w, dims.w), height: pct(caja.h, dims.h) }}
-                  transition={{ type: 'spring', stiffness: 500, damping: 45, mass: 0.6 }}
-                >
+              {fijado && (
+                <motion.div className={perdido ? 'marco perdido' : 'marco'} style={{ left, top, width, height }}>
                   <motion.div
-                    key={fijado}
+                    key={fijado.n}
                     className="marco-interior"
                     initial={{ scale: 1.4, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
@@ -517,11 +707,24 @@ export default function App() {
                   </motion.div>
                   <AnimatePresence mode="wait">
                     {etiqueta && (
-                      <motion.b key={etiqueta} className="rotulo" initial={{ opacity: 0, y: 6, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
-                        {busy && <Loader2 size={14} className="giro" aria-hidden="true" />}
-                        {etiqueta}
-                        {tab === 'identificar' && actual && !busy && !caja.perdido && <em>{Math.round(actual.score * 100)}%</em>}
-                      </motion.b>
+                      <motion.div
+                        key={etiqueta}
+                        className={mostrarResumen ? 'rotulo con-resumen' : 'rotulo'}
+                        initial={{ opacity: 0, y: 6, scale: 0.95 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        transition={{ duration: 0.2 }}
+                        onPointerDown={(e) => mostrarResumen && e.stopPropagation()}
+                        onClick={() => mostrarResumen && setVerMas(true)}
+                        title={mostrarResumen ? 'Ver la descripción completa en el panel' : undefined}
+                      >
+                        <span className="rotulo-cabeza">
+                          {(busy || etiqueta === 'Analizando…') && <Loader2 size={14} className="giro" aria-hidden="true" />}
+                          <b>{etiqueta}</b>
+                          {tab === 'identificar' && actual && !busy && !perdido && <em>{Math.round(actual.score * 100)}%</em>}
+                        </span>
+                        {mostrarResumen && <span className="rotulo-resumen">{actual.objeto.resumen}</span>}
+                      </motion.div>
                     )}
                   </AnimatePresence>
                 </motion.div>
@@ -573,7 +776,14 @@ export default function App() {
                   </motion.div>
                 )}
               </AnimatePresence>
-              {errorCam && <div className="cam-error">{errorCam}</div>}
+              {estadoCam !== 'activa' && estadoCam !== 'iniciando' && (
+                <div className="cam-error" role="alert">
+                  <p>{errorCam}</p>
+                  <button className="pill secundario" onPointerDown={(e) => e.stopPropagation()} onClick={() => setIntentoCam((n) => n + 1)}>
+                    <RefreshCw size={16} aria-hidden="true" /> Reintentar ahora
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="stats">
@@ -614,7 +824,7 @@ export default function App() {
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.22, ease: SUAVE }}
+                transition={{ duration: 0.18, ease: SUAVE }}
               >
                 {tab === 'identificar' && (
                   <>
@@ -645,23 +855,26 @@ export default function App() {
                         </motion.div>
                         {reconocido ? (
                           <>
-                            <motion.p className="lead" variants={aparecer} custom={1}>{actual.objeto.resumen}</motion.p>
-                            <AnimatePresence initial={false}>
-                              {verMas && (
-                                <motion.div className="mas" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.3, ease: SUAVE }}>
-                                  <p>{actual.objeto.detalle}</p>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
+                            <motion.p className="lead" variants={aparecer} custom={1}>{actual.objeto.resumen || SIN_RESUMEN}</motion.p>
                             <motion.div className="acciones" variants={aparecer} custom={2}>
                               <button className="pill sutil" onClick={() => setVerMas(!verMas)} aria-expanded={verMas}>
-                                {verMas ? 'Ver menos' : 'Ver más'}
+                                {verMas ? 'Ocultar información' : 'Más información'}
                                 <motion.span animate={{ rotate: verMas ? 180 : 0 }} style={{ display: 'inline-flex' }}><ChevronDown size={16} aria-hidden="true" /></motion.span>
                               </button>
                               <button className="link" onClick={() => { setTeach({ ...teachVacio, target: actual.objeto }); setTab('ensenar'); }}>
                                 Mejorar reconocimiento
                               </button>
                             </motion.div>
+                            <AnimatePresence initial={false}>
+                              {verMas && (
+                                <motion.div className="mas" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.3, ease: SUAVE }}>
+                                  <div className="mas-caja">
+                                    <h3>Más información</h3>
+                                    {parrafos(actual.objeto.detalle || SIN_DETALLE).map((p, i) => <p key={i}>{p}</p>)}
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
                           </>
                         ) : (
                           <>
@@ -675,7 +888,7 @@ export default function App() {
                           <motion.div className="otros" variants={aparecer} custom={3}>
                             <h3>Candidatos</h3>
                             {res.ranking.slice(0, 4).map((r, i) => (
-                              <button key={r.objeto.id} className={i === res.indice ? 'otro on' : 'otro'} onClick={() => { setRes({ ...res, indice: i }); setVerMas(false); }}>
+                              <button key={r.objeto.id} className={i === res.indice ? 'otro on' : 'otro'} onClick={() => { setRes({ ...res, indice: i }); setVerMas(true); }}>
                                 <span className="otro-nombre">{r.objeto.nombre}</span>
                                 <span className="otro-pct">{Math.round(r.score * 100)}%</span>
                                 <span className="otro-barra">
@@ -720,25 +933,25 @@ export default function App() {
                     <AnimatePresence initial={false}>
                       {!teach.target && (
                         <motion.div className="campos" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
-                          <label>Nombre<input value={teach.nombre} onChange={(e) => setTeach({ ...teach, nombre: e.target.value })} placeholder="Ej: Sensor de temperatura" /></label>
+                          <label>Nombre<input value={teach.nombre} maxLength={120} onChange={(e) => setTeach({ ...teach, nombre: e.target.value })} placeholder="Ej: Sensor de temperatura" /></label>
                           <label>Categoría
                             <select value={teach.categoria} onChange={(e) => setTeach({ ...teach, categoria: e.target.value })}>
                               <option>Informática</option>
                               <option>Electrónica</option>
                             </select>
                           </label>
-                          <label>Descripción corta<textarea rows={2} value={teach.resumen} onChange={(e) => setTeach({ ...teach, resumen: e.target.value })} /></label>
-                          <label>Información ampliada<textarea rows={3} value={teach.detalle} onChange={(e) => setTeach({ ...teach, detalle: e.target.value })} /></label>
+                          <label>Descripción corta<textarea rows={2} maxLength={300} value={teach.resumen} onChange={(e) => setTeach({ ...teach, resumen: e.target.value })} placeholder="Qué es, en una oración." /></label>
+                          <label>Descripción larga<textarea rows={4} maxLength={2000} value={teach.detalle} onChange={(e) => setTeach({ ...teach, detalle: e.target.value })} placeholder="Cómo funciona, para qué se usa, datos clave." /></label>
                         </motion.div>
                       )}
                     </AnimatePresence>
                     <ol className="pasos">
-                      <li className={caja ? 'hecho' : ''}>Hacé clic en el objeto en la cámara</li>
+                      <li className={fijado ? 'hecho' : ''}>Hacé clic en el objeto en la cámara</li>
                       <li className={teach.muestras.length >= 3 ? 'hecho' : ''}>Capturá muestras girándolo (mínimo 3)</li>
                     </ol>
                     <div className="fila">
-                      <button className="pill sutil" disabled={!caja || busy || modelo !== 'listo'} onClick={() => capturar(1)}><Camera size={16} aria-hidden="true" /> Capturar</button>
-                      <button className="pill sutil" disabled={!caja || busy || modelo !== 'listo'} onClick={() => capturar(RAFAGA)}><Zap size={16} aria-hidden="true" /> Ráfaga ×{RAFAGA}</button>
+                      <button className="pill sutil" disabled={!fijado || busy || modelo !== 'listo'} onClick={() => capturar(1)}><Camera size={16} aria-hidden="true" /> Capturar</button>
+                      <button className="pill sutil" disabled={!fijado || busy || modelo !== 'listo'} onClick={() => capturar(RAFAGA)}><Zap size={16} aria-hidden="true" /> Ráfaga ×{RAFAGA}</button>
                       {teach.muestras.length > 0 && <button className="link" onClick={() => setTeach({ ...teach, muestras: [], miniaturas: [] })}>Reiniciar</button>}
                     </div>
                     {teach.miniaturas.length > 0 && (
@@ -761,7 +974,7 @@ export default function App() {
                     </label>
                     <div className="fila">
                       <button className="pill sutil" onClick={exportar}><Download size={16} aria-hidden="true" /> Exportar</button>
-                      <label className="pill sutil archivo"><Upload size={16} aria-hidden="true" /> Importar<input type="file" accept="application/json" onChange={importar} hidden /></label>
+                      <label className="pill sutil archivo"><Upload size={16} aria-hidden="true" /> Importar<input type="file" accept="application/json,.json" onChange={importar} hidden /></label>
                       <button className="pill sutil" onClick={() => update(restaurarBase(lib))}><RotateCcw size={16} aria-hidden="true" /> Muestras base</button>
                     </div>
                     <div className="tabla" role="table" aria-label="Objetos de la biblioteca">
@@ -775,7 +988,15 @@ export default function App() {
                           </span>
                           <span className="tabla-barra" role="cell"><motion.i initial={{ width: 0 }} animate={{ width: `${((cuentas[o.id] || 0) / maxCuenta) * 100}%` }} transition={{ delay: 0.15 + Math.min(i, 20) * 0.02, duration: 0.5 }} /></span>
                           <span className="cnt" role="cell">{cuentas[o.id] || 0}</span>
-                          <button className="icono" onClick={() => borrar(o)} disabled={!cuentas[o.id] && baseIds.has(o.id)} aria-label={`Borrar muestras de ${o.nombre}`}><Trash2 size={16} aria-hidden="true" /></button>
+                          <button
+                            className={porBorrar === o.id ? 'icono confirmar' : 'icono'}
+                            onClick={() => borrar(o)}
+                            disabled={!cuentas[o.id] && baseIds.has(o.id)}
+                            aria-label={porBorrar === o.id ? `Confirmar: borrar muestras de ${o.nombre}` : `Borrar muestras de ${o.nombre}`}
+                            title={porBorrar === o.id ? 'Tocá de nuevo para confirmar' : 'Borrar muestras'}
+                          >
+                            {porBorrar === o.id ? '¿Sí?' : <Trash2 size={16} aria-hidden="true" />}
+                          </button>
                         </motion.div>
                       ))}
                     </div>

@@ -1,16 +1,50 @@
-# React + Vite
+# UCSE Vision
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Reconocimiento de objetos con la cámara, pensado como una "Pokédex" universitaria por carreras
+(hoy: Informática y Electrónica). Se hace clic sobre un objeto, el sistema lo recorta, lo sigue y muestra
+su ficha con una descripción corta y una larga. Se pueden enseñar objetos nuevos en vivo, con unas pocas
+muestras de la cámara y sin reentrenar la red. Todo corre local, sin internet.
 
-Currently, two official plugins are available:
+## Cómo funciona
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+| Parte | Qué hace | Dónde |
+|---|---|---|
+| Reconocimiento | CLIP (ViT-B/32 cuantizado) convierte el recorte en un vector y se compara con las muestras de la biblioteca | `src/clip.worker.js`, `src/library.js` |
+| Selección por clic | SlimSAM segmenta el objeto bajo el clic; analiza la escena en segundo plano | `src/sam.worker.js`, `src/segmentador.js` |
+| Seguimiento | Coincidencia de plantilla sobre cuadros reducidos | `src/seguimiento.js`, `src/seguidor.worker.js` |
+| Biblioteca | 43 fichas + 952 muestras base incluidas; lo propio se guarda en la PC y se puede exportar | `src/data/`, `src/library.js` |
 
-## React Compiler
+Los tres modelos corren en Web Workers, así la interfaz y la cámara nunca se traban. La app de escritorio se sirve
+desde `app://` con la página aislada (COOP/COEP): eso permite que la segmentación use varios núcleos de la CPU
+en lugar de la GPU, que congelaba el video mientras calculaba.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Comandos
 
-## Expanding the ESLint configuration
+```bash
+npm install
+npm run dev            # interfaz en el navegador (http://localhost:5173)
+npm run electron:dev   # app de escritorio contra el servidor de desarrollo
+npm run build          # compila dist/
+npx electron .         # app de escritorio con dist/
+node scripts/empaquetar.mjs   # carpeta portable release/UCSE-Vision/ (copiar entera al pendrive)
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Pruebas
+
+```bash
+npm test                    # unitarias (Vitest)
+npm run test:fixtures       # genera los videos de la cámara falsa (una vez)
+npm run test:e2e            # funcionales, tolerancia a fallos y estrés sobre la app de escritorio real
+npm run test:rendimiento    # fluidez de cámara e interfaz y latencias (3 repeticiones por escenario)
+npm run test:informe        # arma docs/resultados-pruebas.md con las últimas corridas
+```
+
+Las pruebas E2E abren la app de escritorio con una cámara falsa de Chromium que reproduce videos generados
+y un perfil temporal, así nunca tocan la biblioteca real. Resultados de la última corrida: [docs/resultados-pruebas.md](docs/resultados-pruebas.md).
+
+## Regenerar las muestras base
+
+```bash
+node scripts/descargar-fotos.mjs 30   # fotos de Wikimedia Commons en datos/ (no se versionan)
+node scripts/construir-semilla.mjs    # filtra con CLIP y escribe src/data/semilla.json
+```

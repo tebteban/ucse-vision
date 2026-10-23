@@ -25,13 +25,14 @@ function cajaDeMascara(m, w, h) {
 
 const acciones = {
   // device 'webgpu': encoder (lo pesado) en la GPU en fp32, decoder en CPU. 'wasm': todo en CPU cuantizado.
-  async load({ base, device }) {
+  // hilos > 1 solo funciona con la página aislada (crossOriginIsolated: SharedArrayBuffer disponible).
+  async load({ base, device, hilos = 1 }) {
     env.allowRemoteModels = false;
     env.allowLocalModels = true;
     env.useBrowserCache = false;
     env.localModelPath = new URL('models/clip/', base).href;
     env.backends.onnx.wasm.wasmPaths = new URL('ort/', base).href;
-    env.backends.onnx.wasm.numThreads = 1;
+    env.backends.onnx.wasm.numThreads = hilos;
     processor = await AutoProcessor.from_pretrained(MODEL);
     model = await SamModel.from_pretrained(
       MODEL,
@@ -42,7 +43,9 @@ const acciones = {
     // la GPU recién falla (o se cuelga) al ejecutar: se prueba acá, con una imagen chica
     const c = new OffscreenCanvas(64, 64);
     c.getContext('2d').fillRect(0, 0, 64, 64);
-    await model.get_image_embeddings(await processor(await RawImage.fromCanvas(c)));
+    await acciones.embed({ bitmap: await createImageBitmap(c) });
+    await acciones.decode({ x: 32, y: 32 }); // también se calienta el decodificador: el primer clic real sale rápido
+    escena = null;
   },
 
   // Calcula (lento: segundos) los embeddings de la imagen; los clics posteriores son rápidos.
@@ -62,6 +65,7 @@ const acciones = {
 
   // Segmenta el objeto bajo el punto (px de la imagen embebida) y devuelve su caja, o null.
   async decode({ x, y }) {
+    if (!escena) throw new Error('Todavía no hay una escena analizada');
     const [alto, ancho] = escena.original_sizes[0];
     const k = LADO / Math.max(alto, ancho);
     const out = await model({

@@ -10,7 +10,12 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "vite build && electron-builder --win nsis portable"
+    "electron:build": "vite build && electron-builder --win nsis portable",
+    "test": "vitest run",
+    "test:fixtures": "node tests/fixtures/generar.mjs",
+    "test:e2e": "vite build && playwright test funcional fallas estres",
+    "test:rendimiento": "vite build && playwright test rendimiento",
+    "test:informe": "node tests/informe.mjs"
   },
   "build": {
     "appId": "com.ucse.vision",
@@ -44,6 +49,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
@@ -59,6 +65,7 @@
     "postcss": "^8.5.26",
     "tailwindcss": "^4.3.3",
     "vite": "^8.2.0",
+    "vitest": "^5.0.5",
     "wait-on": "^9.1.0"
   }
 }

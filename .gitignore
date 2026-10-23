@@ -29,3 +29,6 @@ Tarjetas-Juego-UCSE-YOLOv8n-1/
 runs/
 exportar.py
 datos/
+tests/.tmp/
+test-results/
+playwright-report/

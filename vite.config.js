@@ -15,4 +15,8 @@ export default defineConfig({
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
+  test: {
+    include: ['tests/unit/**/*.test.js'], // tests/e2e son de Playwright
+    environment: 'node',
+  },
 })

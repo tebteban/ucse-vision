@@ -1,57 +1,53 @@
 // Cliente del worker de SAM: el cálculo pesado corre fuera del hilo de la interfaz.
+import { crearTrabajador } from './trabajador.js';
+
 const LIMITE_GPU_MS = 30000; // si la GPU no termina de arrancar en este tiempo, se usa la CPU
+const FALLOS_GPU_MAX = 2; // caídas del worker en GPU antes de pasar a CPU para el resto de la sesión
 
-let worker = null;
-let contador = 0;
-const pendientes = new Map();
 export let dispositivo = ''; // 'webgpu' | 'wasm' una vez cargado
+let alCambiar = () => {};
+export const alCambiarDispositivo = (fn) => (alCambiar = fn);
+let alPerder = () => {};
+export const alPerderEscena = (fn) => (alPerder = fn); // un worker nuevo no tiene la escena analizada
 
-function nuevoWorker() {
-  const w = new Worker(new URL('./sam.worker.js', import.meta.url), { type: 'module' });
-  w.onmessage = ({ data: { id, resultado, error } }) => {
-    const p = pendientes.get(id);
-    pendientes.delete(id);
-    error ? p.reject(new Error(error)) : p.resolve(resultado);
-  };
-  return w;
-}
+let fallosGpu = 0;
+const sam = crearTrabajador(() => new Worker(new URL('./sam.worker.js', import.meta.url), { type: 'module' }), {
+  limiteMs: 60000, // el análisis en CPU de una PC lenta puede tardar decenas de segundos
+  alReiniciar: () => {
+    alPerder();
+    if (dispositivo === 'webgpu' && ++fallosGpu >= FALLOS_GPU_MAX) {
+      console.warn('La GPU falló varias veces: la selección por clic sigue en CPU');
+      usar('wasm');
+    }
+  },
+});
 
-function llamar(tipo, args = {}, transfer = []) {
-  worker ??= nuevoWorker();
-  return new Promise((resolve, reject) => {
-    const id = ++contador;
-    pendientes.set(id, { resolve, reject });
-    worker.postMessage({ id, tipo, ...args }, transfer);
-  });
-}
-
-async function cargarCon(device, limite) {
-  const carga = llamar('load', { base: document.baseURI, device });
-  if (!limite) return carga;
-  let t;
-  try {
-    return await Promise.race([carga, new Promise((_, rej) => (t = setTimeout(() => rej(new Error('GPU sin respuesta')), limite)))]);
-  } finally {
-    clearTimeout(t);
-  }
+function usar(device) {
+  dispositivo = device;
+  alCambiar(device);
+  // en CPU, con la página aislada se reparte el cálculo en varios núcleos (dejando dos libres para la interfaz)
+  const hilos = device === 'wasm' && self.crossOriginIsolated ? Math.max(1, Math.min(6, navigator.hardwareConcurrency - 2)) : 1;
+  return sam.iniciar('load', { base: document.baseURI, device, hilos }, device === 'webgpu' ? LIMITE_GPU_MS : 180000);
 }
 
 let carga;
 export function cargarSam() {
   carga ??= (async () => {
-    if (navigator.gpu) {
+    // Con la página aislada, la CPU con varios hilos analiza en ~2-3 s sin competir con el video por la GPU
+    // (en GPU es más rápido pero congela la imagen mientras calcula). Sin aislamiento, la CPU usaría un solo hilo
+    // (~8 s), así que ahí conviene la GPU. ?sam=gpu|cpu fuerza uno u otro.
+    const pedido = new URLSearchParams(location.search).get('sam');
+    const gpuPrimero = pedido === 'gpu' || (pedido !== 'cpu' && !self.crossOriginIsolated);
+    if (navigator.gpu && gpuPrimero) {
       try {
-        await cargarCon('webgpu', LIMITE_GPU_MS);
-        return (dispositivo = 'webgpu');
+        await usar('webgpu');
+        return dispositivo;
       } catch (e) {
         console.warn('SAM en GPU no disponible, se usa CPU:', e);
-        worker.terminate(); // un worker colgado en la GPU no se puede reusar
-        worker = null;
-        pendientes.clear();
       }
     }
-    await cargarCon('wasm');
-    return (dispositivo = 'wasm');
+    await usar('wasm');
+    return dispositivo;
   })().catch((e) => {
     carga = null;
     throw e;
@@ -62,8 +58,10 @@ export function cargarSam() {
 // Calcula la escena del cuadro actual del video. Devuelve cuánto tardó (ms).
 export async function analizarEscena(video) {
   const bitmap = await createImageBitmap(video);
-  return llamar('embed', { bitmap }, [bitmap]);
+  return sam.llamar('embed', { bitmap }, [bitmap]);
 }
 
 // Caja {x,y,w,h} (px del video) del objeto bajo el punto, según la última escena analizada.
-export const objetoEn = (x, y) => llamar('decode', { x, y });
+export const objetoEn = (x, y) => sam.llamar('decode', { x, y }, [], 15000);
+
+export const _matarSegmentacion = () => sam.matar(); // pruebas de tolerancia a fallos
