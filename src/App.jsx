@@ -1,1639 +1,791 @@
-import { useRef, useState, useEffect, useCallback } from 'react';
-import { loadYoloModel, detectYoloObjects } from './yoloDetector';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence, MotionConfig } from 'motion/react';
+import {
+  Camera, ScanSearch, GraduationCap, LibraryBig, Loader2, Plus, Download, Upload, RotateCcw, Trash2,
+  ChevronDown, Aperture, X, Zap, MousePointerClick, LayoutGrid, Cpu, CircuitBoard, HeartPulse, FlaskConical, Cog,
+} from 'lucide-react';
+import { loadEmbedder, cropToCanvas, embed } from './embedder.js';
+import { cargarSam, analizarEscena, objetoEn } from './segmentador.js';
+import { crearSeguidor } from './seguidor.js';
+import { loadLibrary, saveLibrary, normalizar, match, efectiva, soloCategoria, restaurarBase, borrarObjeto, baseIds } from './library.js';
+import { Numero, Anillo, Splash } from './ui.jsx';
 
-const DICCIONARIO = {
-  'auriculares': 'Auriculares',
-  'cable_usb': 'Cable USB',
-  'disco_duro': 'Disco Duro',
-  'gabinete': 'Gabinete',
-  'impresora': 'Impresora',
-  'joystick': 'Joystick',
-  'memoria_ram': 'Memoria RAM',
-  'microfono': 'Micrófono',
-  'monitor': 'Monitor',
-  'mouse': 'Mouse',
-  'parlante': 'Parlante',
-  'pendrive': 'Pendrive',
-  'procesador': 'Procesador',
-  'router': 'Router',
-  'teclado': 'Teclado',
-  'webcam': 'Webcam'
-};
+const MIN_ARRASTRE = 8; // px de pantalla: menos que esto es un clic, más es un encuadre manual
+const RAFAGA = 8;
+const CAMBIO_ESCENA = 8; // diferencia media (0-255) a partir de la cual la escena analizada quedó vieja
+const CAMBIO_LOCAL = 10; // ídem, pero solo alrededor del punto del clic
+const QUIETA = 4; // diferencia entre cuadros seguidos por debajo de la cual la imagen está quieta (ruido de cámara ~1-3)
+const REIDENTIFICAR_MS = 2500;
+const SPLASH_MIN_MS = 1800;
+const CATEGORIAS = [
+  ['', 'Todas', LayoutGrid],
+  ['Informática', 'Informática', Cpu],
+  ['Electrónica', 'Electrónica', CircuitBoard],
+];
+const PROXIMAMENTE = [
+  ['Medicina', HeartPulse],
+  ['Química', FlaskConical],
+  ['Mecánica', Cog],
+];
+const TABS = [
+  ['identificar', 'Identificar', ScanSearch],
+  ['ensenar', 'Enseñar', GraduationCap],
+  ['biblioteca', 'Biblioteca', LibraryBig],
+];
+const SUAVE = [0.22, 1, 0.36, 1];
+const teachVacio = { target: null, nombre: '', categoria: 'Informática', resumen: '', detalle: '', muestras: [], miniaturas: [] };
 
-const ICONOS_OBJETO = {
-  'auriculares': '🎧',
-  'cable_usb': '🔌',
-  'disco_duro': '💽',
-  'gabinete': '🖥️',
-  'impresora': '🖨️',
-  'joystick': '🎮',
-  'memoria_ram': '💾',
-  'microfono': '🎙️',
-  'monitor': '📺',
-  'mouse': '🖱️',
-  'parlante': '🔊',
-  'pendrive': '🏷️',
-  'procesador': '🔲',
-  'router': '📡',
-  'teclado': '⌨️',
-  'webcam': '📷'
-};
-
-const OBJETOS_BUSCADOS = Object.keys(DICCIONARIO);
-const FRAMES_PARA_VALIDAR = 2; // Requiere 2 frames seguidos (~0.12s) para escaneo rápido
-const FRAMES_PARA_PENALIZAR = 2; // 2 frames sosteniendo tarjeta incorrecta (~0.24s a ~8 FPS)
-const PENALTY_COOLDOWN_MS = 2500; // Cooldown entre penalizaciones
-const PENALTY_POINTS = 500; // Puntos que se restan por tarjeta incorrecta
-const OPCIONES_TIEMPO = [60, 90, 120]; // Opciones de tiempo total de partida
-const RANKING_KEY = 'ucse-vision-ranking';
-const LEGENDARY_EVERY = 5;
-const LEGENDARY_SECONDS = 10;
-// Decay exponencial de puntaje: 5s de gracia, luego mitad del valor cada 8s, mínimo 100pts
-const SCORE_GRACE_SECONDS = 5;
-const SCORE_HALF_LIFE_SECONDS = 8;
-const SCORE_MIN_POINTS = 100;
-
-const formatScore = (score) => String(score).padStart(7, '0');
-
-// Anima un número hacia su valor target (efecto "tragamonedas") usando rAF.
-// Solo corre mientras dura la transición, no deja nada en loop.
-function useAnimatedNumber(target, duration = 350) {
-  const [display, setDisplay] = useState(target);
-  const rafRef = useRef(null);
-  const fromRef = useRef(target);
-
-  useEffect(() => {
-    const from = fromRef.current;
-    if (from === target) return undefined;
-    const start = performance.now();
-
-    const animate = (now) => {
-      const t = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - t, 3);
-      setDisplay(Math.round(from + (target - from) * eased));
-      if (t < 1) {
-        rafRef.current = requestAnimationFrame(animate);
-      } else {
-        fromRef.current = target;
-      }
-    };
-
-    rafRef.current = requestAnimationFrame(animate);
-    return () => rafRef.current && cancelAnimationFrame(rafRef.current);
-  }, [target, duration]);
-
-  return display;
-}
-
-// Componente dedicado para el puntaje final animado en Game Over.
-// Se monta/desmonta con cada pantalla de game-over, así la animación
-// de conteo siempre corre de 0 al puntaje real.
-function GameOverScore({ target, duration = 1200 }) {
-  const [display, setDisplay] = useState(0);
-
-  useEffect(() => {
-    // Resetear a 0 y animar hacia el target
-    setDisplay(0);
-    if (target <= 0) return undefined;
-
-    let rafId;
-    const start = performance.now();
-
-    const animate = (now) => {
-      const t = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - t, 3);
-      setDisplay(Math.round(target * eased));
-      if (t < 1) rafId = requestAnimationFrame(animate);
-    };
-
-    rafId = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(rafId);
-  }, [target, duration]);
-
-  return <span className="score-display">{formatScore(display)}</span>;
-}
-
-function ParticleField() {
-  return <div className="arcade-particles" aria-hidden="true" />;
-}
-
-function CornerBrackets() {
-  return (
-    <>
-      <div className="corner-bracket corner-tl" aria-hidden="true" />
-      <div className="corner-bracket corner-tr" aria-hidden="true" />
-      <div className="corner-bracket corner-bl" aria-hidden="true" />
-      <div className="corner-bracket corner-br" aria-hidden="true" />
-    </>
-  );
-}
-
-function CRTOverlay() {
-  return <div className="crt-overlay" aria-hidden="true" />;
-}
-
-function PixelEmoji({ emoji, size = 64, resolution = 16 }) {
-  const canvasRef = useRef(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, resolution, resolution);
-    ctx.font = `${resolution - 2}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(emoji, resolution / 2, resolution / 2 + 1);
-  }, [emoji, resolution]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      width={resolution}
-      height={resolution}
-      className="pixel-emoji"
-      style={{
-        width: size,
-        height: size,
-      }}
-    />
-  );
-}
-
-const leerRanking = () => {
-  try {
-    const raw = localStorage.getItem(RANKING_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch (error) {
-    console.error('No se pudo leer el ranking local:', error);
-    return [];
+// Miniatura gris 64×36 del video, para medir cuánto cambió la escena.
+const miniatura = (() => {
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 36;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  return (video) => {
+    g.drawImage(video, 0, 0, 64, 36);
+    const d = g.getImageData(0, 0, 64, 36).data;
+    return Uint8Array.from({ length: 64 * 36 }, (_, i) => (d[4 * i] + d[4 * i + 1] + d[4 * i + 2]) / 3);
+  };
+})();
+const diferencia = (a, b) => a.reduce((s, x, i) => s + Math.abs(x - b[i]), 0) / a.length;
+// Igual, pero en una ventana de la miniatura alrededor de un punto del video (~1/4 del ancho).
+const diferenciaLocal = (a, b, { px, py }, v) => {
+  const cx = Math.round((px / v.videoWidth) * 64);
+  const cy = Math.round((py / v.videoHeight) * 36);
+  let s = 0;
+  let n = 0;
+  for (let y = Math.max(0, cy - 6); y <= Math.min(35, cy + 6); y++) {
+    for (let x = Math.max(0, cx - 8); x <= Math.min(63, cx + 8); x++) {
+      s += Math.abs(a[y * 64 + x] - b[y * 64 + x]);
+      n++;
+    }
   }
+  return s / n;
 };
 
-function TrainingCaptureView({ onBack }) {
+// Agranda un poco la caja para que el reconocimiento vea algo de contexto.
+const conMargen = (b, v) => {
+  const m = 0.08 * Math.max(b.w, b.h);
+  const x = Math.max(0, b.x - m);
+  const y = Math.max(0, b.y - m);
+  return { x, y, w: Math.min(v.videoWidth - x, b.w + 2 * m), h: Math.min(v.videoHeight - y, b.h + 2 * m) };
+};
+
+const aparecer = {
+  oculto: { opacity: 0, y: 10 },
+  visible: (i = 0) => ({ opacity: 1, y: 0, transition: { delay: i * 0.06, duration: 0.4, ease: SUAVE } }),
+};
+
+export default function App() {
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const [selectedClass, setSelectedClass] = useState(OBJETOS_BUSCADOS[0]);
-  const [counts, setCounts] = useState(() => {
-    const initial = {};
-    OBJETOS_BUSCADOS.forEach((c) => { initial[c] = 0; });
-    return initial;
-  });
-  const [flash, setFlash] = useState(false);
-  const [recentImages, setRecentImages] = useState([]);
+  const camRef = useRef(null);
+  const dragRef = useRef(null);
+  const accionesRef = useRef({}); // el intervalo del análisis necesita la versión vigente de segmentar
+  const seguidorRef = useRef(null);
+  const cajaRef = useRef(null);
+  const escenaRef = useRef({ hay: false, ocupada: false, gris: null, anterior: null, pendiente: null });
+  const tabRef = useRef('identificar');
+  const identRef = useRef(null);
 
+  const [lib, setLib] = useState(loadLibrary); // solo lo propio; ver library.js
+  const [categoria, setCategoria] = useState(''); // '' = todas
+  const [umbral, setUmbral] = useState(0.85);
+  const [modelo, setModelo] = useState('cargando'); // reconocimiento: cargando | listo | error
+  const [sam, setSam] = useState('cargando'); // segmentación: cargando | listo | error
+  const [escena, setEscena] = useState('sin'); // sin (aún no hay análisis) | lista
+  const [analizando, setAnalizando] = useState(false);
+  const [msEscena, setMsEscena] = useState(0);
+  const [dispSam, setDispSam] = useState('');
+  const [camaras, setCamaras] = useState([]);
+  const [camaraId, setCamaraId] = useState('');
+  const [camLista, setCamLista] = useState(false);
+  const [errorCam, setErrorCam] = useState('');
+  const [splashMin, setSplashMin] = useState(true);
+  const [dims, setDims] = useState({ w: 16, h: 9 });
+  const [caja, setCaja] = useState(null); // {x,y,w,h,perdido} en px del video
+  const [fijado, setFijado] = useState(0); // contador: cambia en cada fijado nuevo para repetir la animación
+  const [arrastre, setArrastre] = useState(null); // rectángulo en curso, en px de pantalla
+  const [buscando, setBuscando] = useState(null); // {x,y} en px de pantalla mientras se segmenta un clic
+  const [ondas, setOndas] = useState([]);
+  const [flash, setFlash] = useState(0);
+  const [aviso, setAviso] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [inferencia, setInferencia] = useState(0);
+  const [tab, setTab] = useState('identificar');
+  const [res, setRes] = useState(null); // { ranking, indice }
+  const [verMas, setVerMas] = useState(false);
+  const [teach, setTeach] = useState(teachVacio);
+
+  const base = useMemo(() => efectiva(lib), [lib]);
+  const activa = useMemo(() => soloCategoria(base, categoria), [base, categoria]);
+
+  const update = (next) => {
+    setLib(next);
+    saveLibrary(next);
+  };
+
+  // --- modelos ---
   useEffect(() => {
-    let streamTrack = null;
-    const startCamera = async () => {
+    const blank = document.createElement('canvas');
+    blank.width = blank.height = 224;
+    loadEmbedder()
+      .then(() => embed(blank)) // la primera inferencia es la lenta: la hacemos antes de la demo
+      .then(() => setModelo('listo'))
+      .catch(() => setModelo('error'));
+    cargarSam()
+      .then((d) => {
+        setDispSam(d === 'webgpu' ? 'GPU' : 'CPU');
+        setSam('listo');
+      })
+      .catch(() => setSam('error'));
+    const t = setTimeout(() => setSplashMin(false), SPLASH_MIN_MS);
+    return () => clearTimeout(t);
+  }, []);
+
+  // --- cámara ---
+  useEffect(() => {
+    let stream;
+    let cancelado = false;
+    (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480, facingMode: 'user' }
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: camaraId ? { deviceId: { exact: camaraId }, width: 1280, height: 720 } : { width: 1280, height: 720 },
         });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          streamTrack = stream;
-        }
-      } catch (err) {
-        alert('No se pudo acceder a la cámara: ' + err.message);
-      }
-    };
-
-    startCamera();
-
-    return () => {
-      if (streamTrack) {
-        streamTrack.getTracks().forEach((t) => t.stop());
-      }
-    };
-  }, []);
-
-  const capturePhoto = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    setFlash(true);
-    setTimeout(() => setFlash(false), 150);
-
-    const timestamp = Date.now();
-    const filename = `${selectedClass}_${timestamp}.png`;
-
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
-
-      setCounts((prev) => ({ ...prev, [selectedClass]: (prev[selectedClass] || 0) + 1 }));
-
-      // Guardar preview usando object URL en lugar de dataURL (libera memoria al desmontar)
-      setRecentImages((prev) => {
-        const newEntry = { url, key: `${selectedClass}-${timestamp}` };
-        // Limpiar los object URLs anteriores para evitar memory leak
-        const trimmed = prev.slice(0, 7);
-        trimmed.forEach((img) => URL.revokeObjectURL(img.url));
-        return [newEntry, ...trimmed];
-      });
-    }, 'image/png');
-  };
-
-  useEffect(() => {
-    const handleKey = (e) => {
-      if (e.code === 'Space' || e.code === 'Enter') {
-        e.preventDefault();
-        capturePhoto();
-      }
-      if (e.code === 'ArrowDown' || e.code === 'ArrowRight') {
-        e.preventDefault();
-        setSelectedClass((curr) => {
-          const idx = OBJETOS_BUSCADOS.indexOf(curr);
-          return OBJETOS_BUSCADOS[(idx + 1) % OBJETOS_BUSCADOS.length];
-        });
-      }
-      if (e.code === 'ArrowUp' || e.code === 'ArrowLeft') {
-        e.preventDefault();
-        setSelectedClass((curr) => {
-          const idx = OBJETOS_BUSCADOS.indexOf(curr);
-          return OBJETOS_BUSCADOS[(idx - 1 + OBJETOS_BUSCADOS.length) % OBJETOS_BUSCADOS.length];
-        });
-      }
-    };
-
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const total = Object.values(counts).reduce((a, b) => a + b, 0);
-
-  return (
-    <div className="app-shell" style={{ overflowY: 'auto', maxHeight: '100vh', padding: '1.2rem' }}>
-      <header className="app-header" style={{ justifyContent: 'space-between' }}>
-        <button
-          type="button"
-          onClick={onBack}
-          style={{
-            background: 'rgba(0,255,245,0.15)',
-            border: '2px solid var(--neon-cyan)',
-            color: 'var(--neon-cyan)',
-            fontFamily: 'var(--font-arcade)',
-            fontSize: '0.75rem',
-            padding: '0.6rem 1rem',
-            borderRadius: '4px',
-            cursor: 'pointer'
-          }}
-        >
-          ◀ VOLVER AL JUEGO
-        </button>
-        <div style={{ textAlign: 'center' }}>
-          <h1 className="glitch-text" data-text="CAPTURA IA" style={{ fontSize: '1.2rem' }}>CAPTURA DE ENTRENAMIENTO</h1>
-          <p style={{ fontFamily: 'var(--font-arcade)', fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-            ESPACIO / ENTER PARA CAPTURAR • FLECHAS PARA CAMBIAR CLASE
-          </p>
-        </div>
-        <div className="producer-badge" style={{ margin: 0, padding: '0.4rem 0.8rem' }}>
-          <span>PRODUCIDO POR</span>
-          <strong>ESTEBAN CEJAS</strong>
-        </div>
-      </header>
-
-      <main style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '1.5rem', flex: 1 }}>
-        <section className="arcade-frame" style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div style={{ position: 'relative', width: '100%', aspectRatio: '4/3', background: '#000', borderRadius: '6px', overflow: 'hidden' }}>
-            <video ref={videoRef} autoPlay muted playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            <canvas ref={canvasRef} style={{ display: 'none' }} />
-            {flash && (
-              <div style={{ position: 'absolute', inset: 0, background: '#fff', opacity: 0.8, pointerEvents: 'none' }} />
-            )}
-          </div>
-
-          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-            <label className="input-group" style={{ flex: 1, margin: 0 }}>
-              <span>CLASE SELECCIONADA</span>
-              <select
-                value={selectedClass}
-                onChange={(e) => setSelectedClass(e.target.value)}
-                style={{ fontFamily: 'var(--font-arcade)', fontSize: '0.8rem', padding: '0.7rem' }}
-              >
-                {OBJETOS_BUSCADOS.map((c) => (
-                  <option key={c} value={c}>
-                    {ICONOS_OBJETO[c]} {DICCIONARIO[c].toUpperCase()}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <button
-              type="button"
-              className="start-button"
-              onClick={capturePhoto}
-              style={{ padding: '0.8rem 1.4rem', fontSize: '0.85rem' }}
-            >
-              📸 CAPTURAR ({counts[selectedClass] || 0})
-            </button>
-          </div>
-
-          <div>
-            <span className="mini-label" style={{ marginBottom: '0.5rem', display: 'block' }}>ÚLTIMAS CAPTURAS</span>
-            <div style={{ display: 'flex', gap: '0.5rem', overflowX: 'auto', paddingBottom: '0.5rem' }}>
-              {recentImages.length === 0 ? (
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-arcade)' }}>
-                  Aún no hay capturas guardadas.
-                </span>
-              ) : (
-                recentImages.map((img) => (
-                  <img
-                    key={img.key}
-                    src={img.url}
-                    alt="Captura reciente"
-                    style={{ width: '70px', height: '55px', objectFit: 'cover', borderRadius: '4px', border: '1px solid var(--neon-cyan)' }}
-                  />
-                ))
-              )}
-            </div>
-          </div>
-        </section>
-
-        <aside className="arcade-frame" style={{ padding: '1rem', overflowY: 'auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid var(--neon-cyan)', paddingBottom: '0.5rem' }}>
-            <span style={{ fontFamily: 'var(--font-arcade)', fontSize: '0.9rem', color: 'var(--neon-cyan)' }}>PROGRESO TOTAL</span>
-            <strong style={{ fontFamily: 'var(--font-arcade)', fontSize: '1.2rem', color: 'var(--neon-yellow)' }}>{total} FOTOS</strong>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
-            {OBJETOS_BUSCADOS.map((c) => {
-              const num = counts[c] || 0;
-              const isSelected = selectedClass === c;
-              return (
-                <div
-                  key={c}
-                  onClick={() => setSelectedClass(c)}
-                  style={{
-                    padding: '0.6rem',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    background: isSelected ? 'rgba(0,255,245,0.2)' : 'rgba(0,0,0,0.4)',
-                    border: isSelected ? '2px solid var(--neon-cyan)' : '1px solid rgba(255,255,255,0.1)',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    fontFamily: 'var(--font-arcade)',
-                    fontSize: '0.65rem'
-                  }}
-                >
-                  <span>{ICONOS_OBJETO[c]} {DICCIONARIO[c]}</span>
-                  <strong style={{ color: num >= 15 ? 'var(--neon-green)' : num > 0 ? 'var(--neon-yellow)' : 'var(--text-muted)' }}>
-                    {num}
-                  </strong>
-                </div>
-              );
-            })}
-          </div>
-        </aside>
-      </main>
-    </div>
-  );
-}
-
-function App() {
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-
-  const [model, setModel] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(null);
-  const [gameStarted, setGameStarted] = useState(false);
-  const [gameEnded, setGameEnded] = useState(false);
-  const [showCaptureTool, setShowCaptureTool] = useState(false);
-  const [playerName, setPlayerName] = useState('');
-  const [setupName, setSetupName] = useState('');
-  const [timePerObject, setTimePerObject] = useState(OPCIONES_TIEMPO[0]);
-  const [timeLeft, setTimeLeft] = useState(OPCIONES_TIEMPO[0]);
-  const [sessionTime, setSessionTime] = useState(0);
-  const [puntos, setPuntos] = useState(0);
-  const [objetoActual, setObjetoActual] = useState(OBJETOS_BUSCADOS[0]);
-  const [progresoEscaneo, setProgresoEscaneo] = useState(0);
-  const [statusMessage, setStatusMessage] = useState('');
-  const [ranking, setRanking] = useState(() => leerRanking());
-  const [comboCount, setComboCount] = useState(0);
-  const [comboActive, setComboActive] = useState(false);
-  const [legendaryMode, setLegendaryMode] = useState(false);
-  const [legendaryObject, setLegendaryObject] = useState(null);
-  const [legendaryTimeLeft, setLegendaryTimeLeft] = useState(0);
-  const [objectsFound, setObjectsFound] = useState(0);
-  const [aciertoFlash, setAciertoFlash] = useState(null); // { texto, legendary, key } o null
-  const [penaltyFlash, setPenaltyFlash] = useState(null); // { key } o null
-  const [scorePop, setScorePop] = useState(null); // { texto, penalty, key } o null
-  const [scoreBump, setScoreBump] = useState(''); // 'score-bump' | 'score-drop' | ''
-  const [powerOnActive, setPowerOnActive] = useState(false); // 8. CRT power-on
-  const aciertoTimerRef = useRef(null);
-  const penaltyTimerRef = useRef(null);
-  const scorePopTimerRef = useRef(null);
-  const scoreBumpTimerRef = useRef(null);
-
-  const frameCountRef = useRef(0);
-  const wrongFrameCountRef = useRef(0); // Frames sosteniendo tarjeta incorrecta
-  const lastWrongClassRef = useRef(null); // Última clase incorrecta detectada
-  const lastPenaltyTimeRef = useRef(0); // Cooldown entre penalizaciones
-  const objetoActualRef = useRef(OBJETOS_BUSCADOS[0]);
-  const audioCtxRef = useRef(null);
-  const lastSuccessAtRef = useRef(0);
-  const comboCountRef = useRef(0);
-  const comboTimerRef = useRef(null);
-  const scanToneCooldownRef = useRef(0);
-  const comboActiveRef = useRef(false);
-  const legendaryModeRef = useRef(false);
-  const legendaryObjectRef = useRef(null);
-  const objectsFoundRef = useRef(0);
-  const puntosRef = useRef(0);
-  const sessionTimeRef = useRef(0);
-  const playerNameRef = useRef('');
-  const gameEndedRef = useRef(false);
-  const lastHitTimeRef = useRef(0);
-  const streamRef = useRef(null);
-  const detectLoopRunningRef = useRef(false);
-  const statusTimerRef = useRef(null);
-  const statusQueueRef = useRef([]);
-  const timeLeftRef = useRef(OPCIONES_TIEMPO[0]);
-  const legendaryTimeLeftRef = useRef(0);
-  // Contador monotónico para keys de React: evita duplicados cuando dos
-  // flashes se disparan sincrónicamente con el mismo Date.now()
-  const flashKeyCounterRef = useRef(0);
-  const nextFlashKey = () => { flashKeyCounterRef.current += 1; return flashKeyCounterRef.current; };
-  // Momento en que se asignó el objeto actual (para decay de puntaje)
-  const objectStartTimeRef = useRef(Date.now());
-
-  // Número de puntos animado tipo "tragamonedas" para el HUD del juego (efecto 3)
-  const puntosAnimados = useAnimatedNumber(puntos, 350);
-
-  // Puntaje potencial en tiempo real (decay exponencial tras gracia de 5s)
-  const [potentialScore, setPotentialScore] = useState(1000);
-
-  // Calcula los puntos reales en base al tiempo transcurrido desde que se asignó el objeto
-  const calcPotentialScore = (basePoints = 1000) => {
-    const elapsedSec = (Date.now() - objectStartTimeRef.current) / 1000;
-    if (elapsedSec <= SCORE_GRACE_SECONDS) return basePoints;
-    const decaySec = elapsedSec - SCORE_GRACE_SECONDS;
-    return Math.max(SCORE_MIN_POINTS, Math.round(basePoints * Math.pow(0.5, decaySec / SCORE_HALF_LIFE_SECONDS)));
-  };
-
-  // Mantener refs sincronizados para que finalizarPartida, el loop de detección
-  // y el interval del timer siempre vean los valores más recientes sin cierres viejos
-  useEffect(() => { objetoActualRef.current = objetoActual; }, [objetoActual]);
-  useEffect(() => { legendaryObjectRef.current = legendaryObject; }, [legendaryObject]);
-  useEffect(() => { puntosRef.current = puntos; }, [puntos]);
-  useEffect(() => { sessionTimeRef.current = sessionTime; }, [sessionTime]);
-  useEffect(() => { playerNameRef.current = playerName; }, [playerName]);
-  useEffect(() => { gameEndedRef.current = gameEnded; }, [gameEnded]);
-  useEffect(() => { timeLeftRef.current = timeLeft; }, [timeLeft]);
-  useEffect(() => { legendaryTimeLeftRef.current = legendaryTimeLeft; }, [legendaryTimeLeft]);
-
-  // Actualizar puntaje potencial cada 200ms mientras el juego está activo
-  useEffect(() => {
-    if (!gameStarted || gameEnded) return undefined;
-    const interval = setInterval(() => {
-      // Base: legendario = 5000, normal = 1000
-      const base = legendaryModeRef.current ? 5000 : 1000;
-      setPotentialScore(calcPotentialScore(base));
-    }, 200);
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameStarted, gameEnded]);
-
-  // Efecto 8: dispara la animación de "power-on" tipo CRT al arrancar la partida
-  useEffect(() => {
-    if (gameStarted && !gameEnded) {
-      setPowerOnActive(true);
-      const t = setTimeout(() => setPowerOnActive(false), 550);
-      return () => clearTimeout(t);
-    }
-    return undefined;
-  }, [gameStarted, gameEnded]);
-
-  const getAudioContext = () => {
-    if (typeof window === 'undefined') {
-      return null;
-    }
-
-    const AudioCtor = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtor) {
-      return null;
-    }
-
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new AudioCtor();
-    }
-
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume();
-    }
-
-    return audioCtxRef.current;
-  };
-
-  const playTone = useCallback((frequency, duration = 0.08, type = 'sine', volume = 0.04) => {
-    const audioCtx = getAudioContext();
-    if (!audioCtx) {
-      return;
-    }
-
-    const oscillator = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-
-    oscillator.type = type;
-    oscillator.frequency.value = frequency;
-
-    gainNode.gain.value = volume;
-    gainNode.gain.setValueAtTime(volume, audioCtx.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
-
-    oscillator.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-
-    oscillator.start();
-    oscillator.stop(audioCtx.currentTime + duration);
-  }, []);
-
-  const playScanTone = () => {
-    const now = Date.now();
-    if (now - scanToneCooldownRef.current < 120) {
-      return;
-    }
-
-    scanToneCooldownRef.current = now;
-    playTone(620, 0.05, 'square', 0.03);
-  };
-
-  const playSuccessTone = useCallback(() => {
-    playTone(880, 0.08, 'triangle', 0.05);
-    setTimeout(() => playTone(1180, 0.1, 'triangle', 0.05), 90);
-  }, [playTone]);
-
-  const playErrorBuzzer = useCallback(() => {
-    playTone(200, 0.15, 'sawtooth', 0.06);
-    setTimeout(() => playTone(150, 0.2, 'sawtooth', 0.06), 100);
-  }, [playTone]);
-
-  // Sistema de mensajes con cola y auto-clear.
-  // Cada mensaje se muestra 1.6s; si llega otro antes, se encola.
-  // Solo se ve el primero; cuando se libera el slot, sale el siguiente.
-  const flashStatus = useCallback((message, durationMs = 1600) => {
-    if (!message) return;
-    statusQueueRef.current.push({ message, durationMs });
-    if (statusTimerRef.current) return; // Ya hay uno en pantalla
-
-    const showNext = () => {
-      const next = statusQueueRef.current.shift();
-      if (!next) {
-        statusTimerRef.current = null;
-        setStatusMessage('');
-        return;
-      }
-      setStatusMessage(next.message);
-      statusTimerRef.current = setTimeout(() => {
-        statusTimerRef.current = null;
-        if (statusQueueRef.current.length === 0) {
-          setStatusMessage('');
-        } else {
-          showNext();
-        }
-      }, next.durationMs);
-    };
-    showNext();
-  }, []);
-
-  // Flash grande de acierto sobre la cámara (visual, complementario al statusMessage)
-  const triggerAciertoFlash = useCallback((texto, legendary = false) => {
-    if (aciertoTimerRef.current) {
-      clearTimeout(aciertoTimerRef.current);
-    }
-    const key = nextFlashKey();
-    setAciertoFlash({ texto, legendary, key });
-    aciertoTimerRef.current = setTimeout(() => {
-      setAciertoFlash(null);
-      aciertoTimerRef.current = null;
-    }, 700);
-  }, []);
-
-  // Flash rojo de penalización + texto
-  const triggerPenaltyFlash = useCallback((texto) => {
-    if (penaltyTimerRef.current) {
-      clearTimeout(penaltyTimerRef.current);
-    }
-    const key = nextFlashKey();
-    setPenaltyFlash({ key });
-    penaltyTimerRef.current = setTimeout(() => {
-      setPenaltyFlash(null);
-      penaltyTimerRef.current = null;
-    }, 500);
-    // Texto de puntos perdidos
-    triggerScorePop(texto, true);
-  }, []);
-
-  // Pop-up flotante de puntos ganados/perdidos
-  const triggerScorePop = useCallback((texto, penalty = false) => {
-    if (scorePopTimerRef.current) {
-      clearTimeout(scorePopTimerRef.current);
-    }
-    const key = nextFlashKey();
-    setScorePop({ texto, penalty, key });
-    scorePopTimerRef.current = setTimeout(() => {
-      setScorePop(null);
-      scorePopTimerRef.current = null;
-    }, 800);
-  }, []);
-
-  // Animación de bump en el marcador
-  const triggerScoreBump = useCallback((type = 'score-bump') => {
-    if (scoreBumpTimerRef.current) {
-      clearTimeout(scoreBumpTimerRef.current);
-    }
-    setScoreBump(type);
-    scoreBumpTimerRef.current = setTimeout(() => {
-      setScoreBump('');
-      scoreBumpTimerRef.current = null;
-    }, 300);
-  }, []);
-
-  const guardarRanking = (nombre, puntajeActual, tiempoTotal) => {
-    if (!nombre || !nombre.trim()) return;
-
-    const rankingPrevio = leerRanking();
-    const nombreLimpio = nombre.trim();
-    
-    // Verificar si el jugador ya existe en el ranking
-    const indexExistente = rankingPrevio.findIndex(
-      (e) => e.name.toLowerCase() === nombreLimpio.toLowerCase()
-    );
-
-    let siguienteRanking = [...rankingPrevio];
-
-    if (indexExistente !== -1) {
-      // Si ya existe y obtuvo mejor puntaje, actualizar su registro
-      if (puntajeActual > siguienteRanking[indexExistente].points) {
-        siguienteRanking[indexExistente] = {
-          name: nombreLimpio,
-          points: puntajeActual,
-          time: tiempoTotal
-        };
-      }
-    } else {
-      // Si es un jugador nuevo, agregar su entrada
-      siguienteRanking.push({
-        name: nombreLimpio,
-        points: puntajeActual,
-        time: tiempoTotal
-      });
-    }
-
-    // Ordenar por puntaje descendente y menor tiempo
-    siguienteRanking = siguienteRanking
-      .sort((a, b) => b.points - a.points || a.time - b.time)
-      .slice(0, 10);
-
-    localStorage.setItem(RANKING_KEY, JSON.stringify(siguienteRanking));
-    setRanking(siguienteRanking);
-  };
-
-  const borrarRankingCompleto = () => {
-    localStorage.removeItem(RANKING_KEY);
-    setRanking([]);
-  };
-
-  const finalizarPartida = useCallback((motivo = '¡Partida terminada!') => {
-    if (gameEndedRef.current) {
-      return;
-    }
-
-    const nombreFinal = playerNameRef.current || 'Jugador';
-    guardarRanking(nombreFinal, puntosRef.current, sessionTimeRef.current);
-
-    gameEndedRef.current = true;
-    setGameEnded(true);
-    setGameStarted(false);
-    setStatusMessage(motivo); // En game-over el mensaje es permanente, no en cola
-    setLegendaryMode(false);
-    legendaryModeRef.current = false;
-    setLegendaryObject(null);
-    legendaryObjectRef.current = null;
-
-    // Liberar cámara y stream de forma segura
-    if (videoRef.current && videoRef.current.srcObject) {
-      videoRef.current.srcObject = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!loading) return;
-    const loadModel = async () => {
-      try {
-        const loadedModel = await loadYoloModel('models/best.onnx');
-        setModel(loadedModel);
-        setLoading(false);
-      } catch (error) {
-        console.error('Error al cargar el modelo YOLOv8 ONNX:', error);
-        setLoadError(error?.message || 'Error desconocido al cargar el modelo.');
-        setLoading(false);
-      }
-    };
-
-    loadModel();
-  }, [loading]);
-
-  useEffect(() => {
-    if (!gameStarted || gameEnded) {
-      return undefined;
-    }
-
-    // Si ya hay un stream vivo, no reiniciar (evita fugas y doble cámara)
-    if (streamRef.current && streamRef.current.getTracks().some((t) => t.readyState === 'live')) {
-      return undefined;
-    }
-
-    let cancelled = false;
-
-    const iniciarCamara = async () => {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setStatusMessage('Tu navegador no admite acceso a la cámara.');
-        return;
-      }
-
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480, facingMode: 'user' }
-        });
-
-        if (cancelled) {
-          stream.getTracks().forEach((track) => track.stop());
-          return;
-        }
-
-        if (!videoRef.current) {
-          stream.getTracks().forEach((track) => track.stop());
-          return;
-        }
-
-        streamRef.current = stream;
+        if (cancelado) return stream.getTracks().forEach((t) => t.stop());
         videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => undefined);
-      } catch (err) {
-        console.error('Error al acceder a la cámara:', err);
-        setStatusMessage('No se pudo acceder a la cámara. Revisá el permiso del navegador.');
+        setErrorCam('');
+        setCamLista(true);
+        setCamaras((await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput'));
+      } catch (e) {
+        setErrorCam(e.message || 'No se pudo abrir la cámara');
       }
-    };
-
-    iniciarCamara();
-
+    })();
     return () => {
-      cancelled = true;
+      cancelado = true;
+      stream?.getTracks().forEach((t) => t.stop());
     };
-  }, [gameStarted, gameEnded]);
+  }, [camaraId]);
+
+  // --- seguimiento de la caja ---
+  const fijarCaja = (c) => {
+    cajaRef.current = c;
+    setCaja(c);
+  };
 
   useEffect(() => {
-    if (!gameStarted || gameEnded) {
-      return undefined;
-    }
+    const id = setInterval(() => {
+      const s = seguidorRef.current;
+      if (!s || !videoRef.current?.videoWidth) return;
+      const r = s.paso();
+      const prev = cajaRef.current;
+      if (prev && Math.hypot(r.x - prev.x, r.y - prev.y) < 0.5 && prev.perdido === !r.ok) return;
+      fijarCaja({ x: r.x, y: r.y, w: r.w, h: r.h, perdido: !r.ok });
+    }, 70);
+    return () => clearInterval(id);
+  }, []);
 
-    const interval = setInterval(() => {
-      // Si el juego ya terminó (por finalizarPartida), no hacer nada
-      if (gameEndedRef.current) {
-        return;
-      }
-
-      // 1) Tiempo total de sesión (acumulativo)
-      setSessionTime((current) => current + 1);
-
-      // 2) Tiempo global restante de la partida
-      const currentTimeLeft = timeLeftRef.current;
-      if (currentTimeLeft <= 1) {
-        playSuccessTone();
-        finalizarPartida(`¡Tiempo completado! Lograste escanear ${objectsFoundRef.current} objetos 🎉`);
-        return;
-      }
-      setTimeLeft(currentTimeLeft - 1);
-
-      // 3) Timer del objeto legendario
-      if (legendaryModeRef.current) {
-        const currentLeg = legendaryTimeLeftRef.current;
-        if (currentLeg <= 1) {
-          legendaryModeRef.current = false;
-          setLegendaryMode(false);
-          setLegendaryObject(null);
-          legendaryObjectRef.current = null;
-          flashStatus('¡El objeto legendario ha desaparecido!', 1800);
-
-          // Volver a un objeto normal sin restar puntos ni terminar partida
-          let nuevoObjeto;
-          do {
-            nuevoObjeto = OBJETOS_BUSCADOS[Math.floor(Math.random() * OBJETOS_BUSCADOS.length)];
-          } while (nuevoObjeto === objetoActualRef.current);
-          setObjetoActual(nuevoObjeto);
-        } else {
-          setLegendaryTimeLeft(currentLeg - 1);
-        }
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameStarted, gameEnded, timePerObject]);
-
-  const registrarRacha = () => {
-    const now = Date.now();
-    const windowMs = 5000;
-    const dentroDeVentana = now - lastSuccessAtRef.current < windowMs;
-    const nextCombo = dentroDeVentana ? comboCountRef.current + 1 : 1;
-
-    comboCountRef.current = nextCombo;
-    setComboCount(nextCombo);
-
-    const isComboActive = nextCombo >= 2; // Racha activa desde 2 aciertos
-    comboActiveRef.current = isComboActive;
-    setComboActive(isComboActive);
-
-    lastSuccessAtRef.current = now;
-
-    if (comboTimerRef.current) {
-      clearTimeout(comboTimerRef.current);
-    }
-
-    comboTimerRef.current = setTimeout(() => {
-      comboCountRef.current = 0;
-      setComboCount(0);
-      comboActiveRef.current = false;
-      setComboActive(false);
-    }, windowMs);
-
-    return isComboActive;
-  };
-
-  // Penalización por tarjeta incorrecta
-  const manejarPenalizacion = (claseIncorrecta) => {
-    const now = Date.now();
-    if (now - lastPenaltyTimeRef.current < PENALTY_COOLDOWN_MS) return;
-    lastPenaltyTimeRef.current = now;
-
-    // Restar puntos (mínimo 0)
-    setPuntos((prev) => Math.max(0, prev - PENALTY_POINTS));
-
-    // Romper combo
-    comboCountRef.current = 0;
-    setComboCount(0);
-    comboActiveRef.current = false;
-    setComboActive(false);
-    if (comboTimerRef.current) {
-      clearTimeout(comboTimerRef.current);
-    }
-
-    const nombreIncorrecto = DICCIONARIO[claseIncorrecta] || claseIncorrecta;
-    playErrorBuzzer();
-    triggerPenaltyFlash(`-${PENALTY_POINTS}`);
-    triggerScoreBump('score-drop');
-    flashStatus(`¡INCORRECTO! ${nombreIncorrecto} ≠ objetivo (-${PENALTY_POINTS} pts) ❌`, 2000);
-
-    // Reset wrong frame counter
-    wrongFrameCountRef.current = 0;
-    lastWrongClassRef.current = null;
-  };
-
-  const avanzarObjeto = (puntosBase = 1000, mensaje = '') => {
-    frameCountRef.current = 0;
-    wrongFrameCountRef.current = 0;
-    lastWrongClassRef.current = null;
-    setProgresoEscaneo(0);
-
-    // Aplicar decay exponencial al puntaje base
-    const puntosDecay = calcPotentialScore(puntosBase);
-    const multiplicador = comboActiveRef.current ? 2 : 1;
-    const puntajeReal = puntosDecay * multiplicador;
-
-    setPuntos((prev) => prev + puntajeReal);
-    triggerScorePop(`+${puntajeReal}`);
-    triggerScoreBump('score-bump');
-
-    if (mensaje) {
-      // Reemplazar el valor de puntos en el mensaje con el real calculado
-      const mensajeReal = mensaje.replace(/\d\.000|\d+\.\d+/g, (m) => {
-        const base = parseInt(m.replace('.', ''), 10);
-        const decayed = calcPotentialScore(base);
-        return decayed.toLocaleString('es-AR');
-      });
-      flashStatus(mensajeReal);
-    }
-
-    // Resetear timer para el próximo objeto
-    objectStartTimeRef.current = Date.now();
-    setPotentialScore(puntosBase === 5000 ? 5000 : 1000);
-
-    let nuevoObjeto;
-    do {
-      nuevoObjeto = OBJETOS_BUSCADOS[Math.floor(Math.random() * OBJETOS_BUSCADOS.length)];
-    } while (nuevoObjeto === objetoActualRef.current);
-
-    setObjetoActual(nuevoObjeto);
-  };
-
-  const manejarAcierto = () => {
-    const now = Date.now();
-    // Cooldown de 1200ms (1.2 segundos) para garantizar CERO doble aciertos seguidos
-    if (now - lastHitTimeRef.current < 1200) {
-      return;
-    }
-    lastHitTimeRef.current = now;
-
-    frameCountRef.current = 0;
-    setProgresoEscaneo(0);
-
-    // Si estábamos en modo legendario, completar y salir de modo legendario
-    if (legendaryModeRef.current) {
-      legendaryModeRef.current = false;
-      setLegendaryMode(false);
-      setLegendaryObject(null);
-      legendaryObjectRef.current = null;
-      setLegendaryTimeLeft(0);
-
-      const encontradosLeg = objectsFoundRef.current + 1;
-      objectsFoundRef.current = encontradosLeg;
-      setObjectsFound(encontradosLeg);
-
-      playSuccessTone();
-      const fueCombo = registrarRacha();
-      const mensaje = fueCombo
-        ? `¡LEGENDARIO! +10.000 pts (x2 🔥)`
-        : '¡OBJETO LEGENDARIO ENCONTRADO! ✨ (+5.000 pts)';
-      triggerAciertoFlash('¡LEGENDARIO!', true);
-      avanzarObjeto(5000, mensaje);
-      return;
-    }
-
-    const siguienteObjetosEncontrados = objectsFoundRef.current + 1;
-    objectsFoundRef.current = siguienteObjetosEncontrados;
-    setObjectsFound(siguienteObjetosEncontrados);
-
-    const isLegendary = siguienteObjetosEncontrados > 0 && siguienteObjetosEncontrados % LEGENDARY_EVERY === 0;
-    if (isLegendary) {
-      const opcionesDisponibles = OBJETOS_BUSCADOS.filter((item) => item !== objetoActualRef.current);
-      const siguienteLegendario = opcionesDisponibles[Math.floor(Math.random() * opcionesDisponibles.length)] || OBJETOS_BUSCADOS[0];
-
-      legendaryObjectRef.current = siguienteLegendario;
-      setLegendaryObject(siguienteLegendario);
-      legendaryModeRef.current = true;
-      setLegendaryMode(true);
-      setLegendaryTimeLeft(LEGENDARY_SECONDS);
-      flashStatus(`¡MODO LEGENDARIO (10s)! Busca ${DICCIONARIO[siguienteLegendario]} ✨`, 2500);
-      setObjetoActual(siguienteLegendario);
-      playSuccessTone();
-      return;
-    }
-
-    playSuccessTone();
-    const fueCombo = registrarRacha();
-    const mensaje = fueCombo
-      ? `¡Racha x2! 🔥 +2.000 pts`
-      : '¡Objetivo encontrado! +1.000 pts';
-    triggerAciertoFlash(fueCombo ? '¡COMBO!' : '¡BIEN!', false);
-    avanzarObjeto(1000, mensaje);
-  };
-
-  const setJuegoConfigurado = () => {
-    // Limpiar cola de mensajes pendientes
-    if (statusTimerRef.current) {
-      clearTimeout(statusTimerRef.current);
-      statusTimerRef.current = null;
-    }
-    statusQueueRef.current = [];
-    setStatusMessage('');
-
-    setGameStarted(true);
-    setGameEnded(false);
-    setSessionTime(0);
-    sessionTimeRef.current = 0;
-    setTimeLeft(timePerObject);
-    setProgresoEscaneo(0);
-    frameCountRef.current = 0;
-    setPuntos(0);
-    puntosRef.current = 0;
-    comboCountRef.current = 0;
-    setComboCount(0);
-    setComboActive(false);
-    comboActiveRef.current = false;
-    lastSuccessAtRef.current = 0;
-    objectsFoundRef.current = 0;
-    setObjectsFound(0);
-    legendaryModeRef.current = false;
-    setLegendaryMode(false);
-    setLegendaryObject(null);
-    legendaryObjectRef.current = null;
-    setLegendaryTimeLeft(0);
-    // Resetear timer de decay al arrancar
-    objectStartTimeRef.current = Date.now();
-    setPotentialScore(1000);
-    if (comboTimerRef.current) {
-      clearTimeout(comboTimerRef.current);
-    }
-  };
-
-  const handleStartGame = () => {
-    const nombreFinal = setupName.trim();
-    if (!nombreFinal) {
-      setStatusMessage('Ingresá tu nombre para comenzar.');
-      return;
-    }
-
-    if (nombreFinal.toLowerCase() === 'capture' || nombreFinal.toLowerCase() === 'captura') {
-      setShowCaptureTool(true);
-      return;
-    }
-
-    setPlayerName(nombreFinal);
-    setSetupName(nombreFinal);
-    setJuegoConfigurado();
-  };
-
-  const reiniciarPartida = () => {
-    // Limpiar cola de mensajes pendientes
-    if (statusTimerRef.current) {
-      clearTimeout(statusTimerRef.current);
-      statusTimerRef.current = null;
-    }
-    statusQueueRef.current = [];
-
-    setPlayerName('');
-    setSetupName('');
-    gameEndedRef.current = false;
-    setGameEnded(false);
-    setGameStarted(false);
-    setStatusMessage('');
-    setPuntos(0);
-    puntosRef.current = 0;
-    setTimeLeft(timePerObject);
-    setSessionTime(0);
-    sessionTimeRef.current = 0;
-    setObjetoActual(OBJETOS_BUSCADOS[0]);
-    setProgresoEscaneo(0);
-    frameCountRef.current = 0;
-    wrongFrameCountRef.current = 0;
-    lastWrongClassRef.current = null;
-    lastPenaltyTimeRef.current = 0;
-    comboCountRef.current = 0;
-    setComboCount(0);
-    setComboActive(false);
-    comboActiveRef.current = false;
-    lastSuccessAtRef.current = 0;
-    objectsFoundRef.current = 0;
-    setObjectsFound(0);
-    legendaryModeRef.current = false;
-    setLegendaryMode(false);
-    setLegendaryObject(null);
-    legendaryObjectRef.current = null;
-    setLegendaryTimeLeft(0);
-    if (comboTimerRef.current) {
-      clearTimeout(comboTimerRef.current);
-    }
-
-    // Liberar cámara al volver al setup
-    if (videoRef.current && videoRef.current.srcObject) {
-      videoRef.current.srcObject = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-  };
-
-  const detectFrame = async () => {
-    if (!gameStarted || gameEndedRef.current || !model || !videoRef.current || !canvasRef.current || videoRef.current.readyState !== 4) {
-      return;
-    }
-
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-
-    // Detectar tarjetas con YOLOv8 ONNX
-    const predictions = await detectYoloObjects(video, 0.50);
-
-    // Si el juego terminó mientras esperábamos la inferencia, descartar
-    if (gameEndedRef.current || !gameStarted) {
-      return;
-    }
-
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    let encontroObjetivo = false;
-    let detectoTarjetaIncorrecta = null; // clase incorrecta detectada con alta certeza
-
-    predictions.forEach((prediction) => {
-      const [x, y, width, height] = prediction.bbox;
-      const claseDetectada = prediction.class;
-      const certeza = Math.round(prediction.score * 100);
-
-      if (certeza > 50) {
-        const esObjetivoLegendario = legendaryModeRef.current && claseDetectada === legendaryObjectRef.current;
-        const esObjetivoNormal = !legendaryModeRef.current && claseDetectada === objetoActualRef.current;
-        const esObjetivo = esObjetivoLegendario || esObjetivoNormal;
-
-        const nombreEspanol = DICCIONARIO[claseDetectada] || claseDetectada;
-
-        if (esObjetivo) {
-          encontroObjetivo = true;
-          playScanTone();
-
-          ctx.strokeStyle = '#10B981';
-          ctx.lineWidth = 6;
-          ctx.strokeRect(x, y, width, height);
-
-          ctx.fillStyle = 'rgba(16, 185, 129, 0.8)';
-          ctx.fillRect(x, y - 30, ctx.measureText(`${nombreEspanol}`).width + 60, 30);
-
-          ctx.fillStyle = '#FFFFFF';
-          ctx.font = 'bold 18px Arial';
-          ctx.fillText(`${nombreEspanol.toUpperCase()} (${certeza}%)`, x + 5, y - 10);
-        } else {
-          // Tarjeta detectada pero NO es el objetivo
-          if (certeza > 60) {
-            detectoTarjetaIncorrecta = claseDetectada;
-          }
-
-          ctx.strokeStyle = 'rgba(255, 45, 117, 0.5)';
-          ctx.lineWidth = 3;
-          ctx.strokeRect(x, y, width, height);
-
-          ctx.fillStyle = 'rgba(255, 45, 117, 0.7)';
-          ctx.font = 'bold 14px Arial';
-          ctx.fillText(`✗ ${nombreEspanol}`, x, y > 15 ? y - 5 : 15);
-        }
-      }
-    });
-
-    if (encontroObjetivo) {
-      frameCountRef.current += 1;
-      wrongFrameCountRef.current = 0;
-      lastWrongClassRef.current = null;
-      setProgresoEscaneo((frameCountRef.current / FRAMES_PARA_VALIDAR) * 100);
-
-      if (frameCountRef.current >= FRAMES_PARA_VALIDAR) {
-        manejarAcierto();
-      }
-    } else {
-      if (frameCountRef.current > 0) {
-        frameCountRef.current = 0;
-        setProgresoEscaneo(0);
-      }
-
-      // Detectar tarjeta incorrecta sostenida
-      if (detectoTarjetaIncorrecta) {
-        if (lastWrongClassRef.current === detectoTarjetaIncorrecta) {
-          wrongFrameCountRef.current += 1;
-          if (wrongFrameCountRef.current >= FRAMES_PARA_PENALIZAR) {
-            manejarPenalizacion(detectoTarjetaIncorrecta);
-          }
-        } else {
-          lastWrongClassRef.current = detectoTarjetaIncorrecta;
-          wrongFrameCountRef.current = 1;
-        }
-      } else {
-        wrongFrameCountRef.current = 0;
-        lastWrongClassRef.current = null;
-      }
-    }
-  };
-
-  // Loop de detección a ~6 FPS para no saturar PCs de baja capacidad.
-  // El render del bounding box se hace dentro de detectFrame.
+  // --- análisis de escena en segundo plano (SAM calcula en un worker; el clic luego es rápido) ---
+  // Se analiza cuando la imagen cambió y volvió a quedarse quieta, o cuando un clic lo necesita.
   useEffect(() => {
-    if (!gameStarted || gameEnded) {
-      return undefined;
-    }
-
-    detectLoopRunningRef.current = true;
-    const INTERVAL_MS = 120; // ~8 FPS, escaneo más rápido y reactivo
-
-    const tick = async () => {
-      if (!detectLoopRunningRef.current) return;
-      await detectFrame();
-      if (detectLoopRunningRef.current) {
-        setTimeout(tick, INTERVAL_MS);
+    if (sam !== 'listo') return;
+    const e = escenaRef.current;
+    const id = setInterval(async () => {
+      const v = videoRef.current;
+      if (!v?.videoWidth || v.readyState < 2 || e.ocupada) return;
+      const ahora = miniatura(v);
+      const quieta = e.anterior && diferencia(e.anterior, ahora) <= QUIETA;
+      e.anterior = ahora;
+      const cambio = !e.hay || diferencia(e.gris, ahora) > CAMBIO_ESCENA;
+      if (!e.pendiente && !(cambio && (quieta || !e.hay))) return;
+      e.ocupada = true;
+      setAnalizando(true);
+      const inicio = performance.now();
+      try {
+        setMsEscena(await analizarEscena(v));
+        e.gris = ahora;
+        e.hay = true;
+        setEscena('lista');
+        const p = e.pendiente;
+        // el clic se resuelve con esta escena si se analizó después del clic o si la zona no cambió
+        if (p && (inicio >= p.desde || diferenciaLocal(ahora, p.gris, p, v) <= CAMBIO_LOCAL)) {
+          e.pendiente = null;
+          accionesRef.current.segmentar(p.px, p.py);
+        }
+      } catch {
+        setSam('error');
+      } finally {
+        e.ocupada = false;
+        setAnalizando(false);
       }
-    };
+    }, 500);
+    return () => clearInterval(id);
+  }, [sam]);
 
-    tick();
+  // --- identificar ---
+  const recorte = (c) => cropToCanvas(videoRef.current, conMargen(c, videoRef.current));
 
-    return () => {
-      detectLoopRunningRef.current = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameStarted, gameEnded, model]);
-
-  if (showCaptureTool) {
-    return <TrainingCaptureView onBack={() => setShowCaptureTool(false)} />;
+  async function identificar(c, silencioso = false) {
+    if (modelo !== 'listo') return;
+    if (!silencioso) setBusy(true);
+    try {
+      const t0 = performance.now();
+      const ranking = match(activa, await embed(recorte(c)));
+      setInferencia(Math.round(performance.now() - t0));
+      setRes((r) => (silencioso && r ? { ranking, indice: Math.min(r.indice, ranking.length - 1) } : { ranking, indice: 0 }));
+      if (!silencioso) setVerMas(false);
+    } finally {
+      if (!silencioso) setBusy(false);
+    }
   }
 
-  if (loading) {
-    return (
-      <div className="app-shell setup-shell">
-        <div className="screen-wipe" aria-hidden="true" />
-        <ParticleField />
-        <div className="arcade-grid-bg" aria-hidden="true" />
-        <div className="screen-watermark">ESTEBAN CEJAS • UCSE VISION</div>
-        <div className="setup-card arcade-frame">
-          <div className="arcade-border-glow" aria-hidden="true" />
-          <p className="eyebrow">⟨ SISTEMA IA ⟩</p>
-          <h1 className="setup-title glitch-text" data-text="UCSE VISION">UCSE VISION</h1>
-          <div className="loading-bar-container">
-            <div className="loading-bar">
-              <div className="loading-bar-fill" />
-            </div>
-          </div>
-          <p className="loading-text">INICIANDO RED NEURONAL...</p>
-          <p className="insert-coin">CARGANDO MODELO DE IA</p>
-          <div className="producer-tag">PRODUCIDO POR ESTEBAN CEJAS</div>
-        </div>
-      </div>
-    );
+  // Fija el objeto: dibuja la caja, empieza a seguirlo y lo identifica.
+  function bloquear(c) {
+    seguidorRef.current = crearSeguidor(videoRef.current, c);
+    fijarCaja({ ...c, perdido: false });
+    setFijado((n) => n + 1);
+    setBuscando(null);
+    setAviso('');
+    if (tab === 'identificar') identificar(c);
   }
 
-  if (loadError) {
-    return (
-      <div className="app-shell setup-shell">
-        <div className="screen-wipe" aria-hidden="true" />
-        <ParticleField />
-        <div className="arcade-grid-bg" aria-hidden="true" />
-        <div className="screen-watermark">ESTEBAN CEJAS • UCSE VISION</div>
-        <div className="setup-card arcade-frame" style={{ borderColor: 'var(--neon-magenta)' }}>
-          <p className="eyebrow" style={{ color: 'var(--neon-magenta)' }}>⟨ ERROR ⟩</p>
-          <h1 className="setup-title glitch-text" data-text="ERROR IA" style={{ color: 'var(--neon-magenta)', fontSize: '1.5rem' }}>
-            ERROR AL CARGAR IA
-          </h1>
-          <p style={{ fontFamily: 'var(--font-arcade)', fontSize: '0.65rem', color: 'var(--text-muted)', margin: '1rem 0', lineHeight: '1.8' }}>
-            {loadError}
-          </p>
-          <p style={{ fontFamily: 'var(--font-arcade)', fontSize: '0.6rem', color: 'var(--neon-yellow)', margin: '0.5rem 0 1.5rem' }}>
-            Verificá que el archivo<br />
-            <strong style={{ color: 'var(--neon-cyan)' }}>public/models/best.onnx</strong><br />
-            exista y sea accesible.
-          </p>
-          <button
-            type="button"
-            className="start-button"
-            onClick={() => { setLoadError(null); setLoading(true); }}
-          >
-            ↺ REINTENTAR
-          </button>
-          <div className="producer-tag">PRODUCIDO POR ESTEBAN CEJAS</div>
-        </div>
-      </div>
-    );
+  // Clic: si la zona del objeto no cambió desde el último análisis, se segmenta al instante.
+  function clicEn(px, py, pantalla) {
+    setBuscando(pantalla);
+    const e = escenaRef.current;
+    const v = videoRef.current;
+    const ahora = miniatura(v);
+    if (e.hay && !e.ocupada && diferenciaLocal(e.gris, ahora, { px, py }, v) <= CAMBIO_LOCAL) return segmentar(px, py);
+    e.pendiente = { px, py, gris: ahora, desde: performance.now() };
   }
 
-  if (gameEnded) {
-    // Efecto 15: fuegos artificiales si el jugador entró al top 3 del ranking
-    const posicionJugador = ranking.findIndex((e) => e.name === playerName && e.points === puntos);
-    const esTop3 = posicionJugador !== -1 && posicionJugador < 3;
-
-    return (
-      <div className="app-shell setup-shell">
-        <div className="screen-wipe" aria-hidden="true" />
-        <ParticleField />
-        <div className="arcade-grid-bg" aria-hidden="true" />
-        <div className="screen-watermark">ESTEBAN CEJAS • UCSE VISION</div>
-        <div className="end-results-grid">
-          {/* LEFT PANEL: Game Over info + QR */}
-          <div className="end-left-panel arcade-frame">
-            <div className="arcade-border-glow" aria-hidden="true" />
-            <h1 className="game-over-title glitch-text" data-text="GAME OVER">GAME OVER</h1>
-            <p className="eyebrow">{playerName}</p>
-
-            {esTop3 && (
-              <div className="fireworks-burst" aria-hidden="true">
-                {Array.from({ length: 12 }).map((_, i) => (
-                  <span key={i} className={`firework-piece firework-piece-${i % 4}`} style={{ '--i': i }} />
-                ))}
-              </div>
-            )}
-
-            <div className="final-score-box">
-              <span>PUNTAJE FINAL</span>
-              <strong><GameOverScore target={puntos} /></strong>
-            </div>
-
-            <div className="final-summary">
-              <span>OBJETOS ESCANEADOS</span>
-              <strong>{objectsFound} 🎯</strong>
-            </div>
-
-            <div className="stat-row">
-              <span>TIEMPO TOTAL</span>
-              <strong>{sessionTime}s</strong>
-            </div>
-
-            <div className="producer-badge">
-              <span>PRODUCIDO POR</span>
-              <strong>ESTEBAN CEJAS</strong>
-            </div>
-
-            {statusMessage && <p className="setup-message">{statusMessage}</p>}
-
-            <button type="button" className="start-button" onClick={reiniciarPartida}>
-              ▶ JUGAR DE NUEVO
-            </button>
-          </div>
-
-          {/* RIGHT PANEL: Ranking */}
-          <div className="end-right-panel arcade-frame">
-            <div className="arcade-border-glow" aria-hidden="true" />
-            <div className="ranking-header">
-              <span className="ranking-title">★ HIGH SCORES ★</span>
-              {ranking.length > 0 && (
-                <button
-                  type="button"
-                  className="reset-ranking-btn"
-                  onClick={borrarRankingCompleto}
-                  title="Reiniciar tabla de puntajes"
-                >
-                  🗑️ BORRAR RANKING
-                </button>
-              )}
-            </div>
-
-            <ol className="ranking-list">
-              {ranking.length === 0 ? (
-                <li className="ranking-empty">NO HAY PUNTAJES AÚN</li>
-              ) : (
-                ranking.map((entry, index) => (
-                  <li
-                    key={`${entry.name}-${entry.points}-${index}`}
-                    className={`ranking-item ${index === 0 ? 'ranking-gold' : ''} ${index === 1 ? 'ranking-silver' : ''} ${index === 2 ? 'ranking-bronze' : ''}`}
-                    style={{ animationDelay: `${index * 60}ms` }}
-                  >
-                    <span
-                      className={`ranking-position ${index < 3 ? 'medal-drop' : ''}`}
-                      style={index < 3 ? { animationDelay: `${300 + index * 120}ms` } : undefined}
-                    >
-                      {index === 0 ? '👑' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`}
-                    </span>
-                    <span className="ranking-name">{entry.name}</span>
-                    <strong>{formatScore(entry.points)}</strong>
-                    <small>{entry.time}s</small>
-                  </li>
-                ))
-              )}
-            </ol>
-          </div>
-        </div>
-      </div>
-    );
+  async function segmentar(px, py) {
+    try {
+      const c = await objetoEn(px, py);
+      if (c) bloquear(c);
+      else {
+        setBuscando(null);
+        setAviso('No encontré un objeto ahí. Probá arrastrando para encuadrarlo.');
+      }
+    } catch {
+      setBuscando(null);
+      setAviso('No se pudo segmentar. Encuadralo arrastrando el mouse.');
+    }
   }
 
-  if (!gameStarted) {
-    return (
-      <div className="app-shell setup-shell">
-        <div className="screen-wipe" aria-hidden="true" />
-        <ParticleField />
-        <div className="arcade-grid-bg" aria-hidden="true" />
-        <div className="screen-watermark">ESTEBAN CEJAS • UCSE VISION</div>
-        <div className="setup-card arcade-frame">
-          <div className="arcade-border-glow" aria-hidden="true" />
-          <p className="eyebrow">⟨ NUEVA PARTIDA ⟩</p>
-          <h1 className="player-select-title glitch-text" data-text="PLAYER SELECT">PLAYER SELECT</h1>
-  
-          <label className="input-group">
-            <span>TU NOMBRE</span>
-            <input
-              type="text"
-              value={setupName}
-              onChange={(event) => setSetupName(event.target.value)}
-              placeholder="Ej: Esteban"
-              maxLength={20}
-            />
-          </label>
-  
-          <label className="input-group">
-            <span>TIEMPO POR OBJETO</span>
-            <select
-              value={timePerObject}
-              onChange={(event) => setTimePerObject(Number(event.target.value))}
-            >
-              {OPCIONES_TIEMPO.map((value) => (
-                <option key={value} value={value}>
-                  {value} SEGUNDOS
-                </option>
-              ))}
-            </select>
-          </label>
-  
-          {statusMessage && <p className="setup-message">{statusMessage}</p>}
-  
-          <button type="button" className="start-button" onClick={handleStartGame}>
-            ▶ INSERTAR MONEDA
-          </button>
-          <p className="insert-coin">PRESS START</p>
-          <div className="producer-tag">PRODUCIDO POR ESTEBAN CEJAS</div>
-        </div>
-      </div>
-    );
+  useEffect(() => {
+    // los intervalos leen siempre la versión más reciente de estas funciones y del estado
+    tabRef.current = tab;
+    identRef.current = identificar;
+    accionesRef.current = { segmentar };
+  });
+
+  // Re-identifica de vez en cuando mientras se sigue el objeto, y al cambiar de categoría.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const c = cajaRef.current;
+      if (c && !c.perdido && tabRef.current === 'identificar') identRef.current?.(c, true);
+    }, REIDENTIFICAR_MS);
+    return () => clearInterval(id);
+  }, []);
+  useEffect(() => {
+    const c = cajaRef.current;
+    if (c && !c.perdido && tabRef.current === 'identificar') identRef.current?.(c);
+  }, [categoria]);
+
+  useEffect(() => {
+    if (!aviso) return;
+    const t = setTimeout(() => setAviso(''), 4500);
+    return () => clearTimeout(t);
+  }, [aviso]);
+
+  function soltar() {
+    seguidorRef.current = null;
+    escenaRef.current.pendiente = null;
+    fijarCaja(null);
+    setBuscando(null);
+    setRes(null);
+    setAviso('');
   }
+
+  // --- mouse sobre la cámara ---
+  const pos = (ev) => {
+    const r = camRef.current.getBoundingClientRect();
+    return { x: Math.min(Math.max(ev.clientX - r.left, 0), r.width), y: Math.min(Math.max(ev.clientY - r.top, 0), r.height) };
+  };
+  // pantalla -> video (escalas por eje, por si el contenedor no conserva la proporción)
+  const escala = () => ({ kx: videoRef.current.videoWidth / camRef.current.clientWidth, ky: videoRef.current.videoHeight / camRef.current.clientHeight });
+  const onDown = (ev) => {
+    camRef.current.setPointerCapture(ev.pointerId);
+    dragRef.current = pos(ev);
+    setArrastre(null);
+  };
+  const onMove = (ev) => {
+    const a = dragRef.current;
+    if (!a) return;
+    const b = pos(ev);
+    if (Math.hypot(b.x - a.x, b.y - a.y) >= MIN_ARRASTRE) setArrastre({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
+  };
+  const onUp = (ev) => {
+    const a = dragRef.current;
+    dragRef.current = null;
+    setArrastre(null);
+    if (!a || !videoRef.current?.videoWidth) return;
+    const b = pos(ev);
+    const { kx, ky } = escala();
+    if (Math.hypot(b.x - a.x, b.y - a.y) < MIN_ARRASTRE) {
+      setOndas((o) => [...o, { id: Date.now(), ...b }]);
+      if (sam !== 'listo') return setAviso('La selección por clic todavía no está lista. Encuadrá arrastrando el mouse.');
+      return clicEn(b.x * kx, b.y * ky, b);
+    }
+    bloquear({ x: Math.min(a.x, b.x) * kx, y: Math.min(a.y, b.y) * ky, w: Math.abs(a.x - b.x) * kx, h: Math.abs(a.y - b.y) * ky });
+  };
+
+  // --- enseñar ---
+  async function capturar(n = 1) {
+    if (!cajaRef.current || busy) return;
+    setBusy(true);
+    try {
+      for (let i = 0; i < n; i++) {
+        const canvas = recorte(cajaRef.current);
+        const v = await embed(canvas);
+        const mini = canvas.toDataURL('image/jpeg', 0.7);
+        setFlash((f) => f + 1);
+        setTeach((t) => ({ ...t, muestras: [...t.muestras, v], miniaturas: [...t.miniaturas, mini] }));
+        if (i < n - 1) await new Promise((r) => setTimeout(r, 400));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function guardar() {
+    const { target, nombre, resumen, detalle, muestras } = teach;
+    let objetos = lib.objetos;
+    let id = target?.id;
+    if (!id) {
+      const slug = nombre.trim().toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'objeto';
+      id = base.objetos.some((o) => o.id === slug) ? `${slug}-${Date.now().toString(36)}` : slug;
+      objetos = [...objetos, { id, nombre: nombre.trim(), categoria: teach.categoria, resumen: resumen.trim(), detalle: detalle.trim() }];
+    }
+    update({ ...lib, objetos, muestras: [...lib.muestras, ...muestras.map((v) => ({ id, v }))] });
+    setTeach(teachVacio);
+    setTab('identificar');
+    if (cajaRef.current) identificar(cajaRef.current);
+  }
+
+  const puedeGuardar = teach.muestras.length >= 3 && (teach.target || teach.nombre.trim());
+
+  function exportar() {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(lib)], { type: 'application/json' }));
+    a.download = 'biblioteca-ucse-vision.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  async function importar(e) {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      update(normalizar(JSON.parse(await f.text())));
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  function borrar(o) {
+    if (confirm(`¿Borrar las muestras de "${o.nombre}"?`)) update(borrarObjeto(lib, o.id));
+  }
+
+  const cuentas = base.muestras.reduce((c, m) => ((c[m.id] = (c[m.id] || 0) + 1), c), {});
+  const maxCuenta = Math.max(1, ...Object.values(cuentas));
+  const actual = res?.ranking[res.indice];
+  const reconocido = actual && actual.score >= umbral;
+  const etiqueta = !caja ? '' : caja.perdido ? 'Objeto perdido' : busy ? 'Analizando…' : tab !== 'identificar' ? 'Objeto fijado' : actual ? (reconocido ? actual.objeto.nombre : 'No reconocido') : '';
+  const splash = splashMin || modelo === 'cargando' || !(camLista || errorCam);
+  const pct = (v, total) => `${(v / (total || 1)) * 100}%`;
+  const esperandoEscena = analizando || escena === 'sin';
+  const nombreCategoria = CATEGORIAS.find(([k]) => k === categoria)[1];
 
   return (
-    <div className="app-shell">
-      <div className="screen-wipe" aria-hidden="true" />
-      {powerOnActive && <div className="crt-power-on" aria-hidden="true" />}
-      <ParticleField />
-      <CRTOverlay />
-      <div className="screen-watermark">ESTEBAN CEJAS • UCSE VISION</div>
-  
-      <div className="player-badge">
-        <span>PLAYER</span>
-        <strong>{playerName}</strong>
+    <MotionConfig reducedMotion="user">
+      <Splash
+        visible={splash}
+        pasos={[
+          ['Modelo de reconocimiento', modelo !== 'cargando'],
+          ['Cámara', camLista || !!errorCam],
+          ['Modelo de segmentación', sam !== 'cargando'],
+        ]}
+      />
+      <div className="app">
+        <header className="nav">
+          <div className="brand">
+            <span className="logo"><Aperture size={18} aria-hidden="true" /></span>
+            <strong>UCSE Vision</strong>
+          </div>
+          <nav className="cats" aria-label="Categorías">
+            {CATEGORIAS.map(([k, n, Icono]) => (
+              <button key={n} className={categoria === k ? 'chip on' : 'chip'} aria-pressed={categoria === k} onClick={() => setCategoria(k)}>
+                {categoria === k && <motion.span layoutId="chip-ind" className="chip-ind" transition={{ type: 'spring', stiffness: 420, damping: 36 }} />}
+                <Icono size={16} aria-hidden="true" />
+                <span>{n}</span>
+              </button>
+            ))}
+            <span className="cats-sep" aria-hidden="true" />
+            {PROXIMAMENTE.map(([n, Icono]) => (
+              <button key={n} className="chip pronto" disabled title="Próximamente">
+                <Icono size={16} aria-hidden="true" />
+                <span>{n}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="estados" role="status" aria-live="polite">
+            <span className={`estado ${modelo}`}>
+              {modelo === 'cargando' ? <Loader2 size={14} className="giro" aria-hidden="true" /> : <i className="punto" />}
+              {modelo === 'cargando' ? 'Cargando modelo' : modelo === 'error' ? 'Error de modelo' : 'Reconocimiento listo'}
+            </span>
+            <span className={`estado ${sam === 'error' ? 'error' : esperandoEscena || sam === 'cargando' ? 'cargando' : 'listo'}`}>
+              {sam === 'cargando' || (sam === 'listo' && esperandoEscena) ? <Loader2 size={14} className="giro" aria-hidden="true" /> : <i className="punto" />}
+              {sam === 'error' ? 'Sin selección por clic' : sam === 'cargando' ? 'Cargando selección' : escena === 'sin' ? 'Preparando escena' : analizando ? 'Actualizando escena' : 'Escena lista'}
+            </span>
+          </div>
+        </header>
+
+        <main className="main">
+          <section className="visor" aria-label="Cámara">
+            <div className="barra">
+              <label className="selcam">
+                <Camera size={16} aria-hidden="true" />
+                <select value={camaraId} onChange={(e) => setCamaraId(e.target.value)} aria-label="Cámara">
+                  <option value="">Cámara predeterminada</option>
+                  {camaras.map((d, i) => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Cámara ${i + 1}`}</option>
+                  ))}
+                </select>
+                <ChevronDown size={16} aria-hidden="true" />
+              </label>
+              <span className="ayuda">
+                <MousePointerClick size={16} aria-hidden="true" />
+                {tab === 'ensenar' ? 'Hacé clic en el objeto y capturá muestras' : 'Hacé clic sobre un objeto, o arrastrá para encuadrarlo'}
+              </span>
+              <AnimatePresence>
+                {caja && (
+                  <motion.button className="pill sutil" onClick={soltar} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}>
+                    <X size={16} aria-hidden="true" /> Soltar objeto
+                  </motion.button>
+                )}
+              </AnimatePresence>
+            </div>
+
+            <div
+              className="cam"
+              ref={camRef}
+              style={{ '--ar': dims.w / dims.h }}
+              onPointerDown={onDown}
+              onPointerMove={onMove}
+              onPointerUp={onUp}
+            >
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                onLoadedMetadata={(e) => setDims({ w: e.target.videoWidth, h: e.target.videoHeight })}
+              />
+
+              <div className="flotantes" aria-hidden="true">
+                <span className="flotante"><i className="vivo" /> En vivo</span>
+                <span className="flotante">{TABS.find(([k]) => k === tab)[1]} · {nombreCategoria}</span>
+              </div>
+
+              {caja && (
+                <motion.div
+                  className={caja.perdido ? 'marco perdido' : 'marco'}
+                  initial={false}
+                  animate={{ left: pct(caja.x, dims.w), top: pct(caja.y, dims.h), width: pct(caja.w, dims.w), height: pct(caja.h, dims.h) }}
+                  transition={{ type: 'spring', stiffness: 500, damping: 45, mass: 0.6 }}
+                >
+                  <motion.div
+                    key={fijado}
+                    className="marco-interior"
+                    initial={{ scale: 1.4, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    transition={{ type: 'spring', stiffness: 260, damping: 20 }}
+                  >
+                    <span /><span /><span /><span />
+                  </motion.div>
+                  <AnimatePresence mode="wait">
+                    {etiqueta && (
+                      <motion.b key={etiqueta} className="rotulo" initial={{ opacity: 0, y: 6, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
+                        {busy && <Loader2 size={14} className="giro" aria-hidden="true" />}
+                        {etiqueta}
+                        {tab === 'identificar' && actual && !busy && !caja.perdido && <em>{Math.round(actual.score * 100)}%</em>}
+                      </motion.b>
+                    )}
+                  </AnimatePresence>
+                </motion.div>
+              )}
+
+              {arrastre && <div className="arrastre" style={{ left: arrastre.x, top: arrastre.y, width: arrastre.w, height: arrastre.h }} />}
+
+              {ondas.map((o) => (
+                <motion.span
+                  key={o.id}
+                  className="onda"
+                  style={{ left: o.x, top: o.y }}
+                  initial={{ scale: 0, opacity: 0.9 }}
+                  animate={{ scale: 1, opacity: 0 }}
+                  transition={{ duration: 0.6, ease: 'easeOut' }}
+                  onAnimationComplete={() => setOndas((l) => l.filter((x) => x.id !== o.id))}
+                />
+              ))}
+
+              <AnimatePresence>
+                {buscando && (
+                  <motion.div className="reticula" style={{ left: buscando.x, top: buscando.y }} initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 1.5, opacity: 0 }}>
+                    <i />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {flash > 0 && <motion.div key={flash} className="flash" initial={{ opacity: 0.5 }} animate={{ opacity: 0 }} transition={{ duration: 0.45 }} />}
+
+              <AnimatePresence>
+                {(buscando || aviso) && (
+                  <motion.div
+                    key={aviso || 'buscando'}
+                    className="toast"
+                    role={aviso ? 'alert' : 'status'}
+                    initial={{ opacity: 0, y: 16, x: '-50%' }}
+                    animate={{ opacity: 1, y: 0, x: '-50%' }}
+                    exit={{ opacity: 0, y: 10, x: '-50%' }}
+                  >
+                    {aviso || (
+                      <>
+                        <Loader2 size={16} className="giro" aria-hidden="true" />
+                        {esperandoEscena ? `Analizando la escena${msEscena ? ` (~${Math.ceil(msEscena / 1000)} s)` : ''}…` : 'Detectando objeto…'}
+                        {esperandoEscena && msEscena > 0 && (
+                          <span className="toast-barra"><motion.i key={msEscena} initial={{ width: '0%' }} animate={{ width: '100%' }} transition={{ duration: msEscena / 1000, ease: 'linear' }} /></span>
+                        )}
+                      </>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              {errorCam && <div className="cam-error">{errorCam}</div>}
+            </div>
+
+            <div className="stats">
+              {[
+                ['Objetos', activa.objetos.length, ''],
+                ['Muestras', activa.muestras.length, ''],
+                ['Reconocimiento', inferencia, ' ms'],
+                ['Escena', msEscena / 1000, ' s', 1, dispSam],
+                ['Umbral', Math.round(umbral * 100), '%'],
+              ].map(([nombre, valor, suf, dec = 0, marca], i) => (
+                <motion.div key={nombre} className="stat" variants={aparecer} initial="oculto" animate="visible" custom={i + 2}>
+                  <small>{nombre}</small>
+                  <strong>
+                    <Numero valor={valor} sufijo={suf} decimales={dec} />
+                    {marca && <em className="marca">{marca}</em>}
+                  </strong>
+                </motion.div>
+              ))}
+            </div>
+          </section>
+
+          <aside className="panel">
+            <div className="tabs" role="tablist">
+              {TABS.map(([k, n, Icono]) => (
+                <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'tab on' : 'tab'} onClick={() => setTab(k)}>
+                  {tab === k && <motion.span layoutId="tab-ind" className="tab-ind" transition={{ type: 'spring', stiffness: 420, damping: 36 }} />}
+                  <Icono size={16} aria-hidden="true" />
+                  <span>{n}</span>
+                </button>
+              ))}
+            </div>
+
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={tab}
+                className="body"
+                role="tabpanel"
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.22, ease: SUAVE }}
+              >
+                {tab === 'identificar' && (
+                  <>
+                    {!activa.muestras.length && <p className="vacio">No hay muestras en esta categoría. Importá una biblioteca o enseñá un objeto para empezar.</p>}
+                    {activa.muestras.length > 0 && !res && (
+                      <div className="espera">
+                        <div className="espera-ico" aria-hidden="true">
+                          <i /><i />
+                          <ScanSearch size={28} />
+                        </div>
+                        <h2>Apuntá y hacé clic</h2>
+                        <p>Ubicá un objeto frente a la cámara y hacé clic sobre él. El sistema lo recorta, lo sigue y te muestra su ficha.</p>
+                        <ol className="pasos-espera">
+                          {['Colocá el objeto frente a la cámara', 'Hacé clic sobre él', 'Leé su ficha'].map((t, i) => (
+                            <motion.li key={t} variants={aparecer} initial="oculto" animate="visible" custom={i + 1}><span>{i + 1}</span>{t}</motion.li>
+                          ))}
+                        </ol>
+                      </div>
+                    )}
+                    {res && actual && (
+                      <motion.div key={`${actual.objeto.id}-${reconocido}`} className="ficha" role="status" aria-live="polite" initial="oculto" animate="visible">
+                        <motion.div className="ficha-cabeza" variants={aparecer} custom={0}>
+                          <Anillo valor={actual.score} color={reconocido ? 'var(--ink)' : 'var(--mute)'} />
+                          <div>
+                            <span className="eyebrow">{reconocido ? actual.objeto.categoria : 'Sin coincidencia'}</span>
+                            <h2>{reconocido ? actual.objeto.nombre : 'No reconocido'}</h2>
+                          </div>
+                        </motion.div>
+                        {reconocido ? (
+                          <>
+                            <motion.p className="lead" variants={aparecer} custom={1}>{actual.objeto.resumen}</motion.p>
+                            <AnimatePresence initial={false}>
+                              {verMas && (
+                                <motion.div className="mas" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.3, ease: SUAVE }}>
+                                  <p>{actual.objeto.detalle}</p>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                            <motion.div className="acciones" variants={aparecer} custom={2}>
+                              <button className="pill sutil" onClick={() => setVerMas(!verMas)} aria-expanded={verMas}>
+                                {verMas ? 'Ver menos' : 'Ver más'}
+                                <motion.span animate={{ rotate: verMas ? 180 : 0 }} style={{ display: 'inline-flex' }}><ChevronDown size={16} aria-hidden="true" /></motion.span>
+                              </button>
+                              <button className="link" onClick={() => { setTeach({ ...teachVacio, target: actual.objeto }); setTab('ensenar'); }}>
+                                Mejorar reconocimiento
+                              </button>
+                            </motion.div>
+                          </>
+                        ) : (
+                          <>
+                            <motion.p className="lead" variants={aparecer} custom={1}>No hay un objeto parecido en la biblioteca. Podés enseñárselo ahora, en vivo.</motion.p>
+                            <motion.button variants={aparecer} custom={2} className="pill primario" onClick={() => { setTeach({ ...teachVacio, categoria: categoria || 'Informática' }); setTab('ensenar'); }}>
+                              <GraduationCap size={16} aria-hidden="true" /> Enseñar este objeto
+                            </motion.button>
+                          </>
+                        )}
+                        {res.ranking.length > 1 && (
+                          <motion.div className="otros" variants={aparecer} custom={3}>
+                            <h3>Candidatos</h3>
+                            {res.ranking.slice(0, 4).map((r, i) => (
+                              <button key={r.objeto.id} className={i === res.indice ? 'otro on' : 'otro'} onClick={() => { setRes({ ...res, indice: i }); setVerMas(false); }}>
+                                <span className="otro-nombre">{r.objeto.nombre}</span>
+                                <span className="otro-pct">{Math.round(r.score * 100)}%</span>
+                                <span className="otro-barra">
+                                  <motion.i initial={{ width: 0 }} animate={{ width: `${Math.max(0, (r.score - 0.5) / 0.5) * 100}%` }} transition={{ delay: 0.25 + i * 0.07, duration: 0.6, ease: SUAVE }} />
+                                </span>
+                              </button>
+                            ))}
+                          </motion.div>
+                        )}
+                      </motion.div>
+                    )}
+                  </>
+                )}
+
+                {tab === 'ensenar' && (
+                  <>
+                    <div className="ensenar-cabeza">
+                      <Anillo
+                        valor={Math.min(1, teach.muestras.length / RAFAGA)}
+                        color={teach.muestras.length >= 3 ? 'var(--ink)' : 'var(--hair)'}
+                        etiqueta="muestras"
+                        contenido={<Numero valor={teach.muestras.length} />}
+                        tam={80}
+                      />
+                      <div>
+                        <h2>Entrenamiento en vivo</h2>
+                        <p>El sistema aprende un objeto nuevo con unas pocas muestras de la cámara, sin reentrenar la red.</p>
+                      </div>
+                    </div>
+                    <label>Objeto
+                      <select value={teach.target?.id || ''} onChange={(e) => setTeach({ ...teach, target: base.objetos.find((o) => o.id === e.target.value) || null })}>
+                        <option value="">Objeto nuevo</option>
+                        {['Informática', 'Electrónica'].map((c) => (
+                          <optgroup key={c} label={c}>
+                            {base.objetos.filter((o) => o.categoria === c).map((o) => (
+                              <option key={o.id} value={o.id}>{o.nombre} ({cuentas[o.id] || 0} muestras)</option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </label>
+                    <AnimatePresence initial={false}>
+                      {!teach.target && (
+                        <motion.div className="campos" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
+                          <label>Nombre<input value={teach.nombre} onChange={(e) => setTeach({ ...teach, nombre: e.target.value })} placeholder="Ej: Sensor de temperatura" /></label>
+                          <label>Categoría
+                            <select value={teach.categoria} onChange={(e) => setTeach({ ...teach, categoria: e.target.value })}>
+                              <option>Informática</option>
+                              <option>Electrónica</option>
+                            </select>
+                          </label>
+                          <label>Descripción corta<textarea rows={2} value={teach.resumen} onChange={(e) => setTeach({ ...teach, resumen: e.target.value })} /></label>
+                          <label>Información ampliada<textarea rows={3} value={teach.detalle} onChange={(e) => setTeach({ ...teach, detalle: e.target.value })} /></label>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                    <ol className="pasos">
+                      <li className={caja ? 'hecho' : ''}>Hacé clic en el objeto en la cámara</li>
+                      <li className={teach.muestras.length >= 3 ? 'hecho' : ''}>Capturá muestras girándolo (mínimo 3)</li>
+                    </ol>
+                    <div className="fila">
+                      <button className="pill sutil" disabled={!caja || busy || modelo !== 'listo'} onClick={() => capturar(1)}><Camera size={16} aria-hidden="true" /> Capturar</button>
+                      <button className="pill sutil" disabled={!caja || busy || modelo !== 'listo'} onClick={() => capturar(RAFAGA)}><Zap size={16} aria-hidden="true" /> Ráfaga ×{RAFAGA}</button>
+                      {teach.muestras.length > 0 && <button className="link" onClick={() => setTeach({ ...teach, muestras: [], miniaturas: [] })}>Reiniciar</button>}
+                    </div>
+                    {teach.miniaturas.length > 0 && (
+                      <div className="minis">
+                        <AnimatePresence>
+                          {teach.miniaturas.map((src, i) => (
+                            <motion.img key={i} src={src} alt={`Muestra ${i + 1}`} initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.5, opacity: 0 }} transition={{ type: 'spring', stiffness: 380, damping: 22 }} />
+                          ))}
+                        </AnimatePresence>
+                      </div>
+                    )}
+                    <button className="grande" disabled={!puedeGuardar} onClick={guardar}><Plus size={18} aria-hidden="true" /> Guardar y reconocer</button>
+                  </>
+                )}
+
+                {tab === 'biblioteca' && (
+                  <>
+                    <label>Umbral de reconocimiento: {Math.round(umbral * 100)}%
+                      <input type="range" min="0.6" max="0.98" step="0.01" value={umbral} onChange={(e) => setUmbral(+e.target.value)} />
+                    </label>
+                    <div className="fila">
+                      <button className="pill sutil" onClick={exportar}><Download size={16} aria-hidden="true" /> Exportar</button>
+                      <label className="pill sutil archivo"><Upload size={16} aria-hidden="true" /> Importar<input type="file" accept="application/json" onChange={importar} hidden /></label>
+                      <button className="pill sutil" onClick={() => update(restaurarBase(lib))}><RotateCcw size={16} aria-hidden="true" /> Muestras base</button>
+                    </div>
+                    <div className="tabla" role="table" aria-label="Objetos de la biblioteca">
+                      <div className="tabla-cab" role="row"><span role="columnheader">Objeto</span><span role="columnheader">Muestras</span></div>
+                      {activa.objetos.length === 0 && <p className="vacio">No hay objetos en esta categoría.</p>}
+                      {base.objetos.filter((o) => !categoria || o.categoria === categoria).map((o, i) => (
+                        <motion.div key={o.id} className="tabla-fila" role="row" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: Math.min(i, 20) * 0.02 }}>
+                          <span className="tabla-nombre" role="cell">
+                            {o.nombre}
+                            <small>{o.categoria}{baseIds.has(o.id) ? '' : ' · propio'}</small>
+                          </span>
+                          <span className="tabla-barra" role="cell"><motion.i initial={{ width: 0 }} animate={{ width: `${((cuentas[o.id] || 0) / maxCuenta) * 100}%` }} transition={{ delay: 0.15 + Math.min(i, 20) * 0.02, duration: 0.5 }} /></span>
+                          <span className="cnt" role="cell">{cuentas[o.id] || 0}</span>
+                          <button className="icono" onClick={() => borrar(o)} disabled={!cuentas[o.id] && baseIds.has(o.id)} aria-label={`Borrar muestras de ${o.nombre}`}><Trash2 size={16} aria-hidden="true" /></button>
+                        </motion.div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </motion.div>
+            </AnimatePresence>
+          </aside>
+        </main>
       </div>
-  
-      <header className="app-header">
-        <div className="brand-lockup" aria-label="UCSE Vision">
-          <img src="/favicon.png" alt="Logo UCSE Vision" className="app-logo-img" />
-          <div>
-            <p className="eyebrow">⟨ LABORATORIO IA ⟩</p>
-            <h1 className="app-title glitch-text" data-text="UCSE VISION">UCSE VISION</h1>
-          </div>
-        </div>
-        <div className="header-credits">
-          <span className="credits-label">PRODUCIDO POR</span>
-          <strong className="credits-author">ESTEBAN CEJAS</strong>
-        </div>
-      </header>
-  
-      <main className="app-layout">
-        <section className="camera-panel">
-          <div className={`camera-frame ${comboActive ? 'combo-active' : ''} ${legendaryMode ? 'legendary-active' : ''}`}>
-            <div className="camera-watermark">DEV: ESTEBAN CEJAS</div>
-            <video
-              ref={videoRef}
-              autoPlay
-              muted
-              playsInline
-              width="640"
-              height="480"
-              className="camera-video"
-            />
-            <canvas ref={canvasRef} width="640" height="480" className="camera-overlay" />
-  
-            <CornerBrackets />
-
-            {/* Efecto 5: vignette roja de urgencia cuando quedan pocos segundos */}
-            {timeLeft <= 5 && timeLeft > 0 && <div className="urgency-vignette" aria-hidden="true" />}
-  
-            {comboActive && (
-              <div className="combo-banner">⚡ RACHA x2 ⚡</div>
-            )}
-  
-            {legendaryMode && (
-              <div className="legendary-banner">✨ LEGENDARIO ✨</div>
-            )}
-
-            {aciertoFlash && (
-              <div key={aciertoFlash.key} className={`acierto-flash ${aciertoFlash.legendary ? 'legendary' : ''}`}>
-                {aciertoFlash.texto}
-              </div>
-            )}
-
-            {/* Efecto 4: confetti pixelado al acertar */}
-            {aciertoFlash && (
-              <div className="confetti-burst" key={`confetti-${aciertoFlash.key}`} aria-hidden="true">
-                {Array.from({ length: 8 }).map((_, i) => (
-                  <span key={i} className={`confetti-piece confetti-piece-${i % 4}`} style={{ '--i': i }} />
-                ))}
-              </div>
-            )}
-
-            {penaltyFlash && (
-              <div key={penaltyFlash.key} className="penalty-flash" />
-            )}
-
-            {scorePop && (
-              <div key={scorePop.key} className={`score-pop ${scorePop.penalty ? 'penalty' : ''}`}>
-                {scorePop.texto}
-              </div>
-            )}
-  
-            {progresoEscaneo > 0 && (
-              <div className="scan-indicator">
-                <p className="scan-indicator-label">▶ ESCANEANDO OBJETIVO...</p>
-                <div className="scan-bar">
-                  <div className="scan-fill" style={{ width: `${progresoEscaneo}%` }} />
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-  
-        <aside className="side-panel">
-          <div className="panel-header">
-            <p className="panel-label">⟨ ESCÁNER ⟩</p>
-            <h2 className="side-title">DETECCIÓN IA</h2>
-          </div>
-  
-          <div className="meta-stack">
-            <div className="mini-card">
-              <span className="mini-label">JUGADOR</span>
-              <strong>{playerName}</strong>
-            </div>
-            <div className={`mini-card timer-card ${timeLeft <= 5 ? 'timer-urgent' : ''}`}>
-              <span className="mini-label">TIEMPO</span>
-              <strong>{timeLeft}s</strong>
-            </div>
-          </div>
-  
-          <div className="meta-stack">
-            <div className="mini-card">
-              <span className="mini-label">OBJETOS LOGRADOS</span>
-              <strong>{objectsFound} 🎯</strong>
-            </div>
-            {legendaryMode && (
-              <div className="mini-card timer-card timer-urgent">
-                <span className="mini-label">LEGENDARIO</span>
-                <strong>{legendaryTimeLeft}s ⏳</strong>
-              </div>
-            )}
-          </div>
-  
-          <div className="objective-box">
-            <p className="objective-label">ENCUENTRA Y MANTÉN FRENTE A LA CÁMARA:</p>
-            <div
-              className={`reference-icon emoji-enter ${legendaryMode ? 'legendary-emoji-wrap' : ''}`}
-              style={{ margin: '0.6rem 0' }}
-              key={`emoji-${objetoActual}-${legendaryMode}`}
-            >
-              {legendaryMode && <div className="legendary-rays" aria-hidden="true" />}
-              <PixelEmoji emoji={ICONOS_OBJETO[objetoActual]} size={72} />
-            </div>
-            <div
-              className={`objective-pill objective-pill-enter ${legendaryMode ? 'legendary-pill' : ''}`}
-              key={`pill-${objetoActual}-${legendaryMode}`}
-            >
-              <span>{legendaryMode ? `★ ${DICCIONARIO[objetoActual]} ★` : DICCIONARIO[objetoActual]}</span>
-            </div>
-            {/* Indicador de puntaje potencial con decay */}
-            <div className="potential-score-indicator" style={{
-              marginTop: '0.5rem',
-              fontFamily: 'var(--font-arcade)',
-              fontSize: '0.7rem',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              padding: '0.3rem 0.5rem',
-              background: 'rgba(0,0,0,0.3)',
-              borderRadius: '4px',
-              color: potentialScore >= 900
-                ? 'var(--neon-green)'
-                : potentialScore >= 600
-                  ? 'var(--neon-yellow)'
-                  : potentialScore >= 300
-                    ? '#ff9500'
-                    : 'var(--neon-magenta)',
-            }}>
-              <span style={{ color: 'var(--text-muted)', fontSize: '0.6rem' }}>VALE:</span>
-              <span>+{potentialScore.toLocaleString('es-AR')}</span>
-            </div>
-          </div>
-  
-          {statusMessage && <p className="status-message">{statusMessage}</p>}
-  
-          {comboActive && (
-            <div className="combo-pill combo-pill-pop" key={`combo-${comboCount}`}>
-              ⚡ RACHA {comboCount} ⚡
-              <div className="combo-timer-bar" key={`combo-bar-${comboCount}`}>
-                <div className="combo-timer-fill" />
-              </div>
-            </div>
-          )}
-  
-          <div className="score-card">
-            <span className="score-label">PUNTUACIÓN</span>
-            <span className={`score-value score-display ${scoreBump}`}>{formatScore(puntosAnimados)}</span>
-          </div>
-  
-          <button
-            type="button"
-            className="end-game-button"
-            onClick={() => finalizarPartida('Partida finalizada')}
-          >
-            ■ FINALIZAR PARTIDA
-          </button>
-        </aside>
-      </main>
-    </div>
+    </MotionConfig>
   );
 }
-
-export default App;

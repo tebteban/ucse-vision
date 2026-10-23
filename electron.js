@@ -9,8 +9,8 @@ function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
-    title: 'UCSE VISION — Arcade IA',
-    icon: path.join(__dirname, 'public', 'favicon.png'),
+    title: 'UCSE Vision',
+    icon: path.join(__dirname, 'dist', 'favicon.png'),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
