@@ -61,7 +61,10 @@ export async function analizarEscena(video) {
   return sam.llamar('embed', { bitmap }, [bitmap]);
 }
 
-// Caja {x,y,w,h} (px del video) del objeto bajo el punto, según la última escena analizada.
-export const objetoEn = (x, y) => sam.llamar('decode', { x, y }, [], 15000);
+// Recortes candidatos {x,y,w,h,area,iou} (px del video) para un clic, según la última escena analizada.
+export const recortesEn = (x, y) => sam.llamar('candidatos', { x, y }, [], 15000);
+
+// Solo para el banco de pruebas: analiza una imagen cualquiera en lugar del cuadro de la cámara.
+export const _analizarImagen = (bitmap) => sam.llamar('embed', { bitmap }, [bitmap]);
 
 export const _matarSegmentacion = () => sam.matar(); // pruebas de tolerancia a fallos

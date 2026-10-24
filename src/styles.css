@@ -174,6 +174,7 @@ button.estado:hover { background: var(--pressed); }
 .ensenar-cabeza { display: flex; align-items: center; gap: 16px; }
 .ensenar-cabeza h2 { font-size: 20px; line-height: 28px; margin-bottom: 4px; }
 .ensenar-cabeza p { color: var(--body); font-size: 14px; line-height: 20px; }
+.nota { margin: -4px 0 0; font-size: 14px; line-height: 20px; color: var(--body); }
 .campos { display: flex; flex-direction: column; gap: 16px; overflow: hidden; }
 .minis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
 .minis img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: var(--r-md); }

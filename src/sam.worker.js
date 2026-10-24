@@ -1,8 +1,6 @@
 import { env, AutoProcessor, SamModel, RawImage, Tensor } from '@huggingface/transformers';
 
 const MODEL = 'Xenova/slimsam-77-uniform';
-const MAX_AREA = 0.6; // una máscara que cubre más que esto es el fondo, no el objeto
-const MIN_IOU = 0.5; // confianza mínima que SAM se da a sí mismo para aceptar una máscara
 const LADO = 1024; // lado al que SAM reescala la imagen
 
 let processor, model, escena; // escena = { embeddings, original_sizes, reshaped_input_sizes }
@@ -44,7 +42,7 @@ const acciones = {
     const c = new OffscreenCanvas(64, 64);
     c.getContext('2d').fillRect(0, 0, 64, 64);
     await acciones.embed({ bitmap: await createImageBitmap(c) });
-    await acciones.decode({ x: 32, y: 32 }); // también se calienta el decodificador: el primer clic real sale rápido
+    await acciones.candidatos({ x: 32, y: 32 }); // también se calienta el decodificador: el primer clic real sale rápido
     escena = null;
   },
 
@@ -63,8 +61,9 @@ const acciones = {
     return Math.round(performance.now() - t0);
   },
 
-  // Segmenta el objeto bajo el punto (px de la imagen embebida) y devuelve su caja, o null.
-  async decode({ x, y }) {
+  // Los recortes que SAM propone para un clic (px de la imagen embebida): de una parte, del objeto y de algo
+  // más grande, cada uno con su caja y la confianza que SAM le da (iou). Cuál usar lo decide recorte.js.
+  async candidatos({ x, y }) {
     if (!escena) throw new Error('Todavía no hay una escena analizada');
     const [alto, ancho] = escena.original_sizes[0];
     const k = LADO / Math.max(alto, ancho);
@@ -76,12 +75,12 @@ const acciones = {
     const [masks] = await processor.post_process_masks(out.pred_masks, escena.original_sizes, escena.reshaped_input_sizes);
     const [, n, h, w] = masks.dims;
     const iou = Array.from(out.iou_scores.data);
-    const cajas = [...Array(n).keys()].map((i) => {
-      const caja = cajaDeMascara(masks.data.subarray(i * h * w, (i + 1) * h * w), w, h);
-      return caja && caja.area < MAX_AREA ? { ...caja, iou: iou[i] } : null;
-    }).filter(Boolean);
-    // un punto da máscaras de parte y de objeto entero: de las confiables, la más grande
-    return cajas.filter((c) => c.iou >= MIN_IOU).sort((a, b) => b.area - a.area)[0] ?? cajas.sort((a, b) => b.iou - a.iou)[0] ?? null;
+    return [...Array(n).keys()]
+      .map((i) => {
+        const caja = cajaDeMascara(masks.data.subarray(i * h * w, (i + 1) * h * w), w, h);
+        return caja && { ...caja, iou: iou[i] };
+      })
+      .filter(Boolean);
   },
 };
 

@@ -5,7 +5,8 @@ import {
   ChevronDown, Aperture, X, Zap, MousePointerClick, LayoutGrid, Cpu, CircuitBoard, HeartPulse, FlaskConical, Cog, RefreshCw,
 } from 'lucide-react';
 import { loadEmbedder, cropToCanvas, embed, reconocimientoOcupado, _matarReconocimiento } from './embedder.js';
-import { cargarSam, analizarEscena, objetoEn, alCambiarDispositivo, alPerderEscena, _matarSegmentacion } from './segmentador.js';
+import { cargarSam, analizarEscena, recortesEn, alCambiarDispositivo, alPerderEscena, _matarSegmentacion, _analizarImagen } from './segmentador.js';
+import { elegirRecorte, siguienteRecorte } from './recorte.js';
 import { crearSeguidor, soltarSeguidor } from './seguidor.js';
 import { diferencia, diferenciaLocal, MINI_W, MINI_H } from './seguimiento.js';
 import { loadLibrary, saveLibrary, normalizar, match, efectiva, soloCategoria, restaurarBase, borrarObjeto, baseIds } from './library.js';
@@ -283,7 +284,7 @@ export default function App() {
     const e = escenaRef.current;
     const id = setInterval(async () => {
       const v = videoRef.current;
-      if (!v?.videoWidth || v.readyState < 2 || e.ocupada) return;
+      if (!v?.videoWidth || v.readyState < 2 || e.ocupada || e.pausada) return;
       const ahora = miniatura(v);
       const quieta = e.anterior && diferencia(e.anterior, ahora) <= QUIETA;
       e.anterior = ahora;
@@ -301,7 +302,7 @@ export default function App() {
         // el clic se resuelve con esta escena si se analizó después del clic o si la zona no cambió
         if (p && (inicio >= p.desde || diferenciaLocal(ahora, p.gris, p.fx, p.fy) <= CAMBIO_LOCAL)) {
           e.pendiente = null;
-          accionesRef.current.segmentar(p.px, p.py, p.reintento);
+          accionesRef.current.segmentar(p.px, p.py, p.reintento, p.cajaActual);
         }
       } catch (err) {
         console.error('Análisis de escena:', err);
@@ -367,30 +368,38 @@ export default function App() {
   }
 
   // Clic: si la zona del objeto no cambió desde el último análisis, se segmenta al instante.
+  // Un clic dentro del objeto ya fijado no busca otro objeto: cambia su recorte por el siguiente más chico.
   function clicEn(px, py, pantalla) {
     setBuscando(pantalla);
     const e = escenaRef.current;
     const v = videoRef.current;
+    const c = cajaRef.current;
+    const cajaActual = c && !c.perdido && px >= c.x && px <= c.x + c.w && py >= c.y && py <= c.y + c.h ? c.w * c.h : 0; // px² del recuadro actual
     const ahora = miniatura(v);
     const fx = px / v.videoWidth;
     const fy = py / v.videoHeight;
-    if (e.hay && !e.ocupada && diferenciaLocal(e.gris, ahora, fx, fy) <= CAMBIO_LOCAL) return segmentar(px, py);
-    e.pendiente = { px, py, fx, fy, gris: ahora, desde: performance.now() };
+    if (e.hay && !e.ocupada && diferenciaLocal(e.gris, ahora, fx, fy) <= CAMBIO_LOCAL) return segmentar(px, py, false, cajaActual);
+    e.pendiente = { px, py, fx, fy, gris: ahora, desde: performance.now(), cajaActual };
   }
 
-  async function segmentar(px, py, reintento = false) {
+  async function segmentar(px, py, reintento = false, cajaActual = 0) {
     const seg = segRef.current;
     if (seg.enCurso) {
-      seg.siguiente = [px, py, reintento]; // clics rápidos: los intermedios se descartan
+      seg.siguiente = [px, py, reintento, cajaActual]; // clics rápidos: los intermedios se descartan
       return;
     }
     seg.enCurso = true;
     const gen = generacion.current;
     try {
-      const c = await objetoEn(px, py);
+      const v = videoRef.current;
+      const candidatos = await recortesEn(px, py);
+      const c = cajaActual ? siguienteRecorte(candidatos, cajaActual) : elegirRecorte(candidatos, v.videoWidth, v.videoHeight);
+      if (MODO_PRUEBA) window.__ucse.ultimoRecorte = { candidatos, elegido: c, cajaActual, video: [v.videoWidth, v.videoHeight] };
       if (gen !== generacion.current || seg.siguiente) return; // ya hubo otro clic: manda el último
-      if (c) bloquear(c);
-      else {
+      if (c) {
+        bloquear(c);
+        if (cajaActual) avisar(c.w * c.h < cajaActual ? 'Recorte más chico. Hacé clic otra vez sobre el objeto para seguir ajustándolo.' : 'Volvió al recorte más grande. Hacé clic otra vez para achicarlo.');
+      } else {
         setBuscando(null);
         avisar('No encontré un objeto ahí. Probá arrastrando para encuadrarlo.');
       }
@@ -402,7 +411,7 @@ export default function App() {
       if (!reintento && gen === generacion.current) {
         // típicamente el worker se reinició y perdió la escena: se analiza de nuevo y se reintenta una vez
         const v = videoRef.current;
-        esc.pendiente = { px, py, fx: px / v.videoWidth, fy: py / v.videoHeight, gris: miniatura(v), desde: performance.now(), reintento: true };
+        esc.pendiente = { px, py, fx: px / v.videoWidth, fy: py / v.videoHeight, gris: miniatura(v), desde: performance.now(), reintento: true, cajaActual };
         return;
       }
       setBuscando(null);
@@ -465,7 +474,25 @@ export default function App() {
   // Ganchos para las pruebas de tolerancia a fallos (solo con ?test).
   useEffect(() => {
     if (!MODO_PRUEBA) return;
-    window.__ucse = { matarReconocimiento: _matarReconocimiento, matarSegmentacion: _matarSegmentacion };
+    window.__ucse = {
+      matarReconocimiento: _matarReconocimiento,
+      matarSegmentacion: _matarSegmentacion,
+      // banco de pruebas de recortes: analiza una imagen (url) y devuelve los candidatos para cada punto
+      async recortesDeImagen(url, puntos) {
+        const e = escenaRef.current;
+        e.pausada = true; // que el análisis automático de la cámara no pise la escena de prueba
+        while (e.ocupada) await new Promise((r) => setTimeout(r, 50));
+        try {
+          await _analizarImagen(await createImageBitmap(await (await fetch(url)).blob()));
+          const r = [];
+          for (const [x, y] of puntos) r.push(await recortesEn(x, y));
+          return r;
+        } finally {
+          e.hay = false; // la escena del worker ya no es la de la cámara
+          e.pausada = false;
+        }
+      },
+    };
   }, []);
 
   function soltar() {
@@ -662,7 +689,7 @@ export default function App() {
               </label>
               <span className="ayuda">
                 <MousePointerClick size={16} aria-hidden="true" />
-                {tab === 'ensenar' ? 'Hacé clic en el objeto y capturá muestras' : 'Hacé clic sobre un objeto, o arrastrá para encuadrarlo'}
+                {tab === 'ensenar' ? 'Hacé clic en el objeto (otra vez para ajustar el recorte) y capturá muestras' : 'Hacé clic sobre un objeto (otra vez para ajustar el recorte), o arrastrá para encuadrarlo'}
               </span>
               <AnimatePresence>
                 {fijado && (
@@ -949,6 +976,7 @@ export default function App() {
                       <li className={fijado ? 'hecho' : ''}>Hacé clic en el objeto en la cámara</li>
                       <li className={teach.muestras.length >= 3 ? 'hecho' : ''}>Capturá muestras girándolo (mínimo 3)</li>
                     </ol>
+                    <p className="nota">¿El recuadro toma de más? Hacé clic otra vez sobre el objeto para achicarlo, o arrastrá para encuadrarlo a mano.</p>
                     <div className="fila">
                       <button className="pill sutil" disabled={!fijado || busy || modelo !== 'listo'} onClick={() => capturar(1)}><Camera size={16} aria-hidden="true" /> Capturar</button>
                       <button className="pill sutil" disabled={!fijado || busy || modelo !== 'listo'} onClick={() => capturar(RAFAGA)}><Zap size={16} aria-hidden="true" /> Ráfaga ×{RAFAGA}</button>

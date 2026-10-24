@@ -28,6 +28,9 @@ function fondoConRuido() {
 }
 
 const arduino = await sharp(ARDUINO).resize({ height: 380 }).toBuffer({ resolveWithObject: true });
+// objeto chico sobre una alfombrilla oscura que toca el borde inferior (el caso que confundía al recorte)
+const arduinoChico = await sharp(ARDUINO).resize({ height: 110 }).toBuffer({ resolveWithObject: true });
+const alfombrilla = await sharp({ create: { width: 1040, height: 460, channels: 3, background: '#3e3e3e' } }).png().toBuffer();
 
 // Objeto sintético que no está en el catálogo, para enseñarlo en vivo.
 const nuevo = await sharp(Buffer.from(`
@@ -45,6 +48,7 @@ const ESCENAS = {
   movil: [8, (t) => [{ img: arduino, x: (W - arduino.info.width) / 2 + 70 * Math.sin((2 * Math.PI * t) / 4), y: 170 + 20 * Math.cos((2 * Math.PI * t) / 4) }]],
   nuevo: [5, () => [{ img: nuevo, x: (W - 300) / 2, y: 210 }]],
   vacio: [3, () => []],
+  chico: [3, () => [{ img: { data: alfombrilla }, x: 120, y: 260 }, { img: arduinoChico, x: 640 - 55, y: 435 }]],
 };
 
 await fs.mkdir(SALIDA, { recursive: true });
