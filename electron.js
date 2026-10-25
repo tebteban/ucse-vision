@@ -32,7 +32,8 @@ async function servir(pedido) {
       const r = await net.fetch(OLLAMA + pathname.slice('/ollama'.length), { method: pedido.method, headers: { 'Content-Type': 'application/json' }, body: pedido.method === 'POST' ? await pedido.text() : undefined });
       return new Response(r.body, { status: r.status, headers: { 'Content-Type': 'application/json', 'Cross-Origin-Resource-Policy': 'same-origin' } });
     } catch {
-      return new Response('Ollama no responde', { status: 502 });
+      // sin Ollama, la lista de modelos vacía: para la app es lo mismo y no deja un error de red en la consola
+      return pathname === '/ollama/api/tags' ? Response.json({ models: [] }) : new Response('Ollama no responde', { status: 502 });
     }
   }
   const ruta =path.normalize(path.join(DIST, decodeURIComponent(new URL(pedido.url).pathname)));

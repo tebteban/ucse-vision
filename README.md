@@ -18,13 +18,28 @@ Los tres modelos corren en Web Workers, así la interfaz y la cámara nunca se t
 desde `app://` con la página aislada (COOP/COEP): eso permite que la segmentación use varios núcleos de la CPU
 en lugar de la GPU, que congelaba el video mientras calculaba.
 
-### Descripciones con IA local (opcional)
+### Ayudante con IA local (opcional)
 
-En **Enseñar**, al escribir el nombre de un objeto nuevo, un LLM local escribe la descripción corta y la larga
-(`src/descripciones.js`); quedan editables antes de guardar. Usa [Ollama](https://ollama.com) si está instalado
-y abierto en la PC: elige `qwen2.5:3b` si lo tiene (entra en 4 GB de VRAM), si no otro modelo de texto instalado.
-Para tenerlo: `ollama pull qwen2.5:3b`. Sin Ollama, las descripciones se completan a mano como siempre.
-La app le habla por `app://ucse/ollama/` (lo reenvía `electron.js`; otra dirección con la variable `UCSE_OLLAMA`).
+Un LLM local en [Ollama](https://ollama.com) ayuda, sin reemplazar el reconocimiento (que sigue siendo CLIP con las
+muestras). Todo está en `src/descripciones.js`:
+
+- **Enseñar:** al escribir el nombre de un objeto nuevo, escribe la descripción corta y la larga (editables).
+- **Con un modelo que ve imágenes** (`gemma3:4b`, el preferido; también `qwen2.5vl:3b`):
+  - cuando CLIP dice "No reconocido", da su opinión ("Parece: …") y "Enseñar este objeto" abre el formulario
+    ya completo;
+  - en Enseñar, "Mirar el objeto" completa nombre, categoría y descripciones desde la cámara.
+
+Primero aparece el nombre y después la ficha, que se va escribiendo en pantalla. Mientras la app está abierta, el
+modelo queda cargado en la GPU, para que ninguna respuesta tenga que esperar la carga.
+
+**Probar la PC antes de la demo:** abrir la app, hacer clic en un objeto, ir a Enseñar y tocar "Mirar el objeto".
+Debajo de los botones dice si el modelo entró entero en la GPU y cuánto tardó la respuesta. Si dice que una parte
+corre en la CPU, va a andar lento: cerrar otros programas que usen la GPU (u otro modelo cargado en Ollama).
+
+Elige el primero que tenga instalado entre `gemma3:4b`, `qwen2.5vl:3b`, `qwen2.5:3b`, `llama3.2:3b` y
+`qwen2.5:1.5b` (todos entran en 4 GB de VRAM); si no tiene ninguno, usa otro modelo de texto instalado. Para tenerlo:
+`ollama pull gemma3:4b`. Sin Ollama, todo se completa a mano como siempre. La app le habla por `app://ucse/ollama/`
+(lo reenvía `electron.js`; otra dirección con la variable `UCSE_OLLAMA`).
 
 ## Comandos
 

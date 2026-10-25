@@ -161,6 +161,8 @@ button.estado:hover { background: var(--pressed); }
 .mas-caja { padding: 16px; border-radius: var(--r-lg); background: var(--soft); }
 .mas-caja h3 { font-size: 16px; line-height: 20px; font-weight: 700; margin-bottom: 8px; }
 .mas-caja p + p { margin-top: 10px; }
+.opinion h3 { display: flex; align-items: center; gap: 6px; }
+.opinion-nombre { font-size: 18px; line-height: 24px; font-weight: 700; color: var(--ink); }
 .acciones { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .otros h3 { font-size: 16px; line-height: 20px; font-weight: 700; margin: 8px 0 4px; }
 .otro { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; width: 100%; padding: 12px 0; border: 0; border-top: 1px solid var(--pressed); background: none; text-align: left; transition: background 0.2s; }

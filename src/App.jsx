@@ -7,7 +7,7 @@ import {
 import { loadEmbedder, cropToCanvas, embed, reconocimientoOcupado, _matarReconocimiento } from './embedder.js';
 import { cargarSam, analizarEscena, recortesEn, alCambiarDispositivo, alPerderEscena, _matarSegmentacion, _analizarImagen } from './segmentador.js';
 import { elegirRecorte, siguienteRecorte } from './recorte.js';
-import { modeloDisponible, precargar, describir } from './descripciones.js';
+import { modeloDisponible, precargar, enGPU, describir, nombrar } from './descripciones.js';
 import { crearSeguidor, soltarSeguidor } from './seguidor.js';
 import { diferencia, diferenciaLocal, MINI_W, MINI_H } from './seguimiento.js';
 import { loadLibrary, saveLibrary, normalizar, match, efectiva, soloCategoria, restaurarBase, borrarObjeto, baseIds } from './library.js';
@@ -64,6 +64,17 @@ const conMargen = (b, v) => {
   return { x, y, w: Math.min(v.videoWidth - x, b.w + 2 * m), h: Math.min(v.videoHeight - y, b.h + 2 * m) };
 };
 
+// Foto del objeto para la IA que ve imágenes: el recorte con margen, de 512 px como máximo, en JPEG base64.
+function fotoDe(v, c) {
+  const b = conMargen(c, v);
+  const k = Math.min(1, 512 / Math.max(b.w, b.h));
+  const lienzo = document.createElement('canvas');
+  lienzo.width = Math.round(b.w * k);
+  lienzo.height = Math.round(b.h * k);
+  lienzo.getContext('2d').drawImage(v, b.x, b.y, b.w, b.h, 0, 0, lienzo.width, lienzo.height);
+  return lienzo.toDataURL('image/jpeg', 0.85).split(',')[1];
+}
+
 const aparecer = {
   oculto: { opacity: 0, y: 10 },
   visible: (i = 0) => ({ opacity: 1, y: 0, transition: { delay: i * 0.06, duration: 0.4, ease: SUAVE } }),
@@ -114,7 +125,9 @@ export default function App() {
   const [verMas, setVerMas] = useState(true);
   const [teach, setTeach] = useState(teachVacio);
   const [porBorrar, setPorBorrar] = useState(null);
-  const [llm, setLlm] = useState(null); // modelo de Ollama que escribe las descripciones, o null si no hay
+  const [llm, setLlm] = useState(null); // {nombre, vision} del modelo de Ollama que ayuda, o null si no hay
+  const [opinion, setOpinion] = useState(null); // {n, ficha, listo, error}: qué dice la IA del objeto fijado n que CLIP no reconoció
+  const [ia, setIa] = useState({ s: 0, gpu: null }); // medidor: segundos de la última respuesta completa y % del modelo en la GPU
   const [escribiendo, setEscribiendo] = useState(false);
   const escribiendoRef = useRef(false); // el blur del nombre y el clic del botón llegan juntos
 
@@ -434,14 +447,21 @@ export default function App() {
     accionesRef.current = { segmentar, identificar, avisar };
   });
 
-  // Al abrir Enseñar se busca Ollama (puede haberse abierto después que la app) y se precarga el modelo.
+  // Se busca Ollama al abrir la app y, mientras no aparezca, en cada cambio de pestaña (puede abrirse después).
   useEffect(() => {
-    if (tab !== 'ensenar' || llm) return;
-    modeloDisponible().then((m) => {
-      setLlm(m);
-      if (m) precargar(m);
-    });
+    if (llm) return;
+    modeloDisponible().then(setLlm);
   }, [tab, llm]);
+
+  // Mientras la app está abierta el modelo queda cargado: Ollama lo descarga a los 30 minutos sin uso y volver a
+  // cargarlo demora la respuesta siguiente. De paso se mide cuánto del modelo entró en la GPU.
+  useEffect(() => {
+    if (!llm) return;
+    const cargar = () => precargar(llm.nombre).then(() => enGPU(llm.nombre)).then((gpu) => setIa((m) => ({ ...m, gpu })));
+    cargar();
+    const id = setInterval(cargar, 10 * 60_000);
+    return () => clearInterval(id);
+  }, [llm]);
 
   // Re-identifica de vez en cuando mientras se sigue el objeto, y al cambiar de categoría.
   useEffect(() => {
@@ -591,18 +611,33 @@ export default function App() {
     if (cajaRef.current) identificar(cajaRef.current);
   }
 
-  async function escribirConIA() {
-    const nombre = teach.nombre.trim();
-    if (!llm || !nombre || escribiendoRef.current) return;
+  const ejemploDe = useCallback((cat) => base.objetos.find((o) => o.categoria === cat && o.detalle) ?? base.objetos[0], [base]); // estilo a copiar
+  const medirIA = useCallback(async (t0) => setIa({ s: (performance.now() - t0) / 1000, gpu: await enGPU(llm.nombre) }), [llm]);
+
+  // Completa la ficha del objeto nuevo con la IA: a partir del nombre, o mirando el objeto fijado (primero el nombre y
+  // la categoría, después las descripciones) si el modelo ve imágenes. El texto aparece mientras se escribe.
+  async function escribirConIA(mirando = false) {
+    const nombreInicial = teach.nombre.trim();
+    let nombre = nombreInicial;
+    let { categoria } = teach;
+    if (!llm || (mirando ? !cajaRef.current : !nombre) || escribiendoRef.current) return;
     escribiendoRef.current = true;
     setEscribiendo(true);
+    const gen = generacion.current;
+    const t0 = performance.now();
+    // lo que llega se descarta si cambió el nombre, se fijó otro objeto o ya se guardó
+    const poner = (cambios, esperado = nombre) =>
+      setTeach((t) => (t.nombre.trim() === esperado && !t.target && gen === generacion.current ? { ...t, ...cambios } : t));
     try {
-      const ejemplo = base.objetos.find((o) => o.categoria === teach.categoria && o.detalle) ?? base.objetos[0];
-      const d = await describir(llm, nombre, teach.categoria, ejemplo);
-      setTeach((t) => (t.nombre.trim() === nombre && !t.target ? { ...t, ...d } : t)); // si cambió el nombre o ya se guardó, se descarta
+      if (mirando) {
+        ({ nombre, categoria } = await nombrar(llm.nombre, fotoDe(videoRef.current, cajaRef.current)));
+        poner({ nombre, categoria, resumen: '', detalle: '' }, nombreInicial);
+      }
+      poner(await describir(llm.nombre, nombre, categoria, ejemploDe(categoria), poner));
+      medirIA(t0);
     } catch (e) {
-      console.error('Descripción con IA:', e);
-      avisar('No se pudo escribir la descripción con IA. Podés completarla a mano.');
+      console.error('Ficha con IA:', e);
+      avisar(mirando ? 'La IA no pudo decir qué objeto es. Escribí el nombre y te ayuda con las descripciones.' : 'No se pudo escribir la descripción con IA. Podés completarla a mano.');
     } finally {
       escribiendoRef.current = false;
       setEscribiendo(false);
@@ -647,6 +682,28 @@ export default function App() {
   const reconocido = actual && actual.score >= umbral;
   const perdido = fijado?.perdido;
   const etiqueta = !fijado ? '' : perdido ? 'Objeto perdido' : busy && !res ? 'Analizando…' : tab !== 'identificar' ? 'Objeto fijado' : actual ? (reconocido ? actual.objeto.nombre : 'No reconocido') : falloIdent ? 'Reintentando…' : 'Analizando…';
+  // Si CLIP no lo reconoce y el modelo ve imágenes, se le pregunta qué es (una vez por objeto fijado).
+  const noReconocido = tab === 'identificar' && fijado && !perdido && !busy && actual && !reconocido;
+  useEffect(() => {
+    if (!noReconocido || !llm?.vision || opinion?.n === fijado.n || !cajaRef.current) return;
+    const { n } = fijado;
+    const t0 = performance.now();
+    const poner = (cambios) => setOpinion((o) => (o?.n === n ? { ...o, ...cambios } : o));
+    setOpinion({ n });
+    (async () => {
+      // primero el nombre (se muestra apenas está), después la ficha, que aparece mientras se escribe
+      const { nombre, categoria } = await nombrar(llm.nombre, fotoDe(videoRef.current, cajaRef.current));
+      poner({ ficha: { nombre, categoria, resumen: '', detalle: '' } });
+      const f = await describir(llm.nombre, nombre, categoria, ejemploDe(categoria), (p) => poner({ ficha: { nombre, categoria, ...p } }));
+      poner({ ficha: { nombre, categoria, ...f }, listo: true });
+      medirIA(t0);
+    })().catch((e) => {
+      console.error('Opinión de la IA:', e);
+      poner({ error: true });
+    });
+  }, [noReconocido, llm, fijado, opinion, ejemploDe, medirIA]);
+  const opinionActual = opinion && fijado && opinion.n === fijado.n ? opinion : null; // la de este objeto fijado
+  const sugerida = opinionActual?.ficha; // la ficha que propuso la IA (a medio escribir hasta que listo)
   const mostrarResumen = fijado && !perdido && tab === 'identificar' && reconocido;
   const splash = splashMin || modelo === 'cargando' || estadoCam === 'iniciando';
   const esperandoEscena = analizando || escena === 'sin';
@@ -937,7 +994,22 @@ export default function App() {
                         ) : (
                           <>
                             <motion.p className="lead" variants={aparecer} custom={1}>No hay un objeto parecido en la biblioteca. Podés enseñárselo ahora, en vivo.</motion.p>
-                            <motion.button variants={aparecer} custom={2} className="pill primario" onClick={() => { setTeach({ ...teachVacio, categoria: categoria || 'Informática' }); setTab('ensenar'); }}>
+                            {llm?.vision && opinionActual && (
+                              <motion.div className="mas-caja opinion" variants={aparecer} custom={2}>
+                                <h3><Sparkles size={14} aria-hidden="true" /> Opinión de la IA</h3>
+                                {sugerida ? (
+                                  <>
+                                    <p className="opinion-nombre">Parece: {sugerida.nombre}</p>
+                                    {sugerida.resumen ? <p>{sugerida.resumen}</p> : !opinionActual.error && <p><Loader2 size={14} className="giro" aria-hidden="true" /> Escribiendo…</p>}
+                                  </>
+                                ) : opinionActual.error ? (
+                                  <p>La IA tampoco pudo decir qué es.</p>
+                                ) : (
+                                  <p><Loader2 size={14} className="giro" aria-hidden="true" /> Mirando el objeto…</p>
+                                )}
+                              </motion.div>
+                            )}
+                            <motion.button variants={aparecer} custom={3} className="pill primario" onClick={() => { setTeach({ ...teachVacio, categoria: categoria || 'Informática', ...(sugerida && (opinionActual.listo ? sugerida : { nombre: sugerida.nombre, categoria: sugerida.categoria })) }); setTab('ensenar'); }}>
                               <GraduationCap size={16} aria-hidden="true" /> Enseñar este objeto
                             </motion.button>
                           </>
@@ -991,7 +1063,7 @@ export default function App() {
                     <AnimatePresence initial={false}>
                       {!teach.target && (
                         <motion.div className="campos" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
-                          <label>Nombre<input value={teach.nombre} maxLength={120} onChange={(e) => setTeach({ ...teach, nombre: e.target.value })} onBlur={() => !teach.resumen.trim() && !teach.detalle.trim() && escribirConIA()} placeholder="Ej: Sensor de temperatura" /></label>
+                          <label>Nombre<input value={teach.nombre} maxLength={120} disabled={escribiendo} onChange={(e) => setTeach({ ...teach, nombre: e.target.value })} onBlur={() => !teach.resumen.trim() && !teach.detalle.trim() && escribirConIA()} placeholder="Ej: Sensor de temperatura" /></label>
                           <label>Categoría
                             <select value={teach.categoria} onChange={(e) => setTeach({ ...teach, categoria: e.target.value })}>
                               <option>Informática</option>
@@ -1003,11 +1075,25 @@ export default function App() {
                           {llm ? (
                             <>
                               <div className="fila">
-                                <button className="pill sutil" disabled={!teach.nombre.trim() || escribiendo} onClick={escribirConIA}>
+                                {llm.vision && (
+                                  <button className="pill sutil" disabled={!fijado || perdido || escribiendo} onClick={() => escribirConIA(true)}>
+                                    <Aperture size={16} aria-hidden="true" /> Mirar el objeto
+                                  </button>
+                                )}
+                                <button className="pill sutil" disabled={!teach.nombre.trim() || escribiendo} onClick={() => escribirConIA()}>
                                   {escribiendo ? <Loader2 size={16} className="giro" aria-hidden="true" /> : <Sparkles size={16} aria-hidden="true" />} {escribiendo ? 'Escribiendo…' : 'Escribir con IA'}
                                 </button>
                               </div>
-                              <p className="nota">La IA local ({llm}) escribe las descripciones a partir del nombre. Revisalas antes de guardar.</p>
+                              <p className="nota">
+                                {llm.vision
+                                  ? `La IA local (${llm.nombre}) puede mirar el objeto y completar todo, o escribir las descripciones a partir del nombre. Revisá el texto antes de guardar.`
+                                  : `La IA local (${llm.nombre}) escribe las descripciones a partir del nombre. Revisalas antes de guardar.`}
+                              </p>
+                              {/* medidor para probar la PC: menos de 100 % en la GPU quiere decir que una parte corre en la CPU (lento) */}
+                              <p className="nota medidor">
+                                {ia.gpu === null ? 'Cargando el modelo…' : ia.gpu >= 100 ? 'Modelo entero en la GPU' : `${ia.gpu} % del modelo en la GPU: el resto corre en la CPU y responde más lento`}
+                                {ia.s > 0 && ` · última respuesta en ${ia.s.toFixed(1)}\u00a0s`}
+                              </p>
                             </>
                           ) : (
                             <p className="nota">Sin IA local (Ollama) en esta PC: completá las descripciones a mano.</p>

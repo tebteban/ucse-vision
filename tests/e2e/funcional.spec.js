@@ -83,7 +83,7 @@ test('enseñar un objeto nuevo en vivo, reconocerlo y que persista al reiniciar'
   await expect(page.locator('.marco')).toHaveCount(1);
   await page.getByRole('tab', { name: 'Enseñar' }).click();
   await page.getByLabel('Nombre').fill('Pastillero violeta');
-  await expect(page.locator('.campos .nota')).toContainText('Sin IA local'); // sin Ollama se completa a mano
+  await expect(page.locator('.campos .nota').first()).toContainText('Sin IA local'); // sin Ollama se completa a mano
   await page.locator('.campos select').selectOption('Electrónica');
   await page.getByLabel('Descripción corta').fill('Caja de prueba para el entrenamiento en vivo.');
   await page.getByRole('button', { name: /Ráfaga/ }).click();
@@ -140,43 +140,92 @@ test('exportar e importar la biblioteca; un archivo inválido no rompe nada', as
   await expect(ctx.page.locator('.tabla-fila', { hasText: 'Objeto exportado' })).toContainText('8');
 });
 
-test('con Ollama, la IA escribe las descripciones a partir del nombre', async () => {
-  // Ollama falso: un modelo instalado y respuestas fijas; se anota qué le pidió la app
+// Ollama falso: un modelo instalado y respuestas fijas en texto, como las de un modelo real; anota qué le pidió la app.
+const FICHA_IA = { resumen: 'Pastillero de prueba escrito por la IA.', detalle: 'Primer párrafo de la IA.\nSegundo párrafo de la IA.' };
+async function ollamaFalso(modelo, { vision = false, nombre = 'Pastillero violeta' } = {}) {
   const pedidos = [];
-  const ficha = { resumen: 'Pastillero de prueba escrito por la IA.', detalle: 'Primer párrafo de la IA.\nSegundo párrafo de la IA.' };
-  const ollama = http.createServer((req, res) => {
+  const servidor = http.createServer((req, res) => {
     let cuerpo = '';
     req.on('data', (d) => (cuerpo += d));
     req.on('end', () => {
-      pedidos.push({ url: req.url, cuerpo: cuerpo && JSON.parse(cuerpo) });
+      const b = cuerpo ? JSON.parse(cuerpo) : {};
+      pedidos.push({ url: req.url, cuerpo: b });
       res.setHeader('Content-Type', 'application/json');
-      if (req.url === '/api/tags') return res.end(JSON.stringify({ models: [{ name: 'qwen2.5:3b' }] }));
-      res.end(JSON.stringify(JSON.parse(cuerpo).prompt ? { response: JSON.stringify(ficha) } : {})); // sin prompt: precarga
+      if (req.url === '/api/tags') return res.end(JSON.stringify({ models: [{ name: modelo }] }));
+      if (req.url === '/api/show') return res.end(JSON.stringify({ capabilities: vision ? ['completion', 'vision'] : ['completion'] }));
+      if (req.url === '/api/ps') return res.end(JSON.stringify({ models: [{ name: modelo, size: 3000, size_vram: 3000 }] }));
+      if (!b.prompt) return res.end('{}'); // precarga
+      const respuesta = b.images ? `1. ${nombre}\n2. Electrónica` : `${FICHA_IA.resumen}\n\n${FICHA_IA.detalle.replace('\n', '\n\n')}`;
+      // en vivo, como Ollama: una línea JSON por pedazo de texto
+      for (const pedazo of respuesta.match(/.{1,12}/gs)) res.write(JSON.stringify({ response: pedazo, done: false }) + '\n');
+      res.end(JSON.stringify({ response: '', done: true }) + '\n');
     });
   });
-  await new Promise((r) => ollama.listen(0, '127.0.0.1', r));
+  await new Promise((r) => servidor.listen(0, '127.0.0.1', r));
+  return { url: `http://127.0.0.1:${servidor.address().port}`, pedidos, cerrar: () => servidor.close() };
+}
+
+async function capturarYGuardar(page) {
+  await page.getByRole('button', { name: /Ráfaga/ }).click();
+  await expect(page.locator('.minis img')).toHaveCount(8, { timeout: 60_000 });
+  await page.getByRole('button', { name: 'Guardar y reconocer' }).click();
+  await expect(page.locator('.ficha .lead')).toHaveText(FICHA_IA.resumen);
+  await expect(page.locator('.mas-caja p')).toHaveText(['Primer párrafo de la IA.', 'Segundo párrafo de la IA.']);
+}
+
+test('con Ollama, la IA escribe las descripciones a partir del nombre', async () => {
+  const ollama = await ollamaFalso('qwen2.5:3b');
   try {
-    ctx = await abrirApp('nuevo', { ollama: `http://127.0.0.1:${ollama.address().port}` });
+    ctx = await abrirApp('nuevo', { ollama: ollama.url });
     const { page } = ctx;
     await esperarLista(page, { escena: false });
     await arrastrarVideo(page, NUEVO.a, NUEVO.b);
     await page.getByRole('tab', { name: 'Enseñar' }).click();
-    await expect(page.locator('.campos .nota')).toContainText('qwen2.5:3b');
+    await expect(page.locator('.campos .nota').first()).toContainText('qwen2.5:3b');
+    await expect(page.getByRole('button', { name: 'Mirar el objeto' })).toHaveCount(0); // este modelo no ve imágenes
     await page.getByLabel('Nombre').fill('Pastillero violeta');
     await page.getByLabel('Nombre').press('Tab'); // al salir del nombre se escriben solas
-    await expect(page.getByLabel('Descripción corta')).toHaveValue(ficha.resumen);
-    await expect(page.getByLabel('Descripción larga')).toHaveValue(ficha.detalle);
-    const generar = pedidos.filter((p) => p.cuerpo?.prompt);
+    await expect(page.getByLabel('Descripción corta')).toHaveValue(FICHA_IA.resumen);
+    await expect(page.getByLabel('Descripción larga')).toHaveValue(FICHA_IA.detalle);
+    const generar = ollama.pedidos.filter((p) => p.cuerpo.prompt);
     expect(generar).toHaveLength(1);
     expect(generar[0].cuerpo.prompt).toContain('Pastillero violeta');
-    expect(pedidos.some((p) => p.url === '/api/generate' && !p.cuerpo.prompt)).toBe(true); // precargó el modelo
-    await page.getByRole('button', { name: /Ráfaga/ }).click();
-    await expect(page.locator('.minis img')).toHaveCount(8, { timeout: 60_000 });
-    await page.getByRole('button', { name: 'Guardar y reconocer' }).click();
-    await expect(page.locator('.ficha .lead')).toHaveText(ficha.resumen);
-    await expect(page.locator('.mas-caja p')).toHaveText(['Primer párrafo de la IA.', 'Segundo párrafo de la IA.']);
+    expect(ollama.pedidos.some((p) => p.url === '/api/generate' && !p.cuerpo.prompt)).toBe(true); // precargó el modelo
+    await capturarYGuardar(page);
   } finally {
-    ollama.close();
+    ollama.cerrar();
+  }
+});
+
+test('con un modelo que ve imágenes: opina sobre lo que CLIP no reconoce y completa la ficha para enseñarlo', async () => {
+  const ollama = await ollamaFalso('gemma3:4b', { vision: true });
+  try {
+    ctx = await abrirApp('nuevo', { ollama: ollama.url });
+    const { page } = ctx;
+    await esperarLista(page, { escena: false });
+    await arrastrarVideo(page, NUEVO.a, NUEVO.b);
+    await expect(page.locator('.ficha h2')).toHaveText('No reconocido');
+    await expect(page.locator('.opinion-nombre')).toHaveText('Parece: Pastillero violeta');
+    await expect(page.locator('.opinion')).toContainText(FICHA_IA.resumen);
+    const vistas = ollama.pedidos.filter((p) => p.cuerpo.images);
+    expect(vistas).toHaveLength(1); // una sola consulta por objeto fijado, aunque CLIP lo re-identifique
+    expect(vistas[0].cuerpo.images[0].length).toBeGreaterThan(1000); // le mandó la foto del recorte
+    await page.getByRole('button', { name: 'Enseñar este objeto' }).click();
+    await expect(page.getByLabel('Nombre')).toHaveValue('Pastillero violeta');
+    await expect(page.locator('.campos select')).toHaveValue('Electrónica');
+    await expect(page.getByLabel('Descripción corta')).toHaveValue(FICHA_IA.resumen);
+    // "Mirar el objeto" vuelve a completar todo desde la cámara
+    await page.getByLabel('Nombre').fill('');
+    await page.getByRole('button', { name: 'Mirar el objeto' }).click();
+    await expect(page.getByLabel('Nombre')).toHaveValue('Pastillero violeta');
+    await expect(page.getByLabel('Descripción corta')).toHaveValue(FICHA_IA.resumen);
+    // medidor para probar la PC de la facultad: todo el modelo en la GPU y cuánto tardó
+    await expect(page.locator('.medidor')).toHaveText(/^Modelo entero en la GPU · última respuesta en \d+\.\d\ss$/);
+    await capturarYGuardar(page);
+    await page.waitForTimeout(3000); // ya reconocido por CLIP: no se le vuelve a preguntar a la IA
+    expect(ollama.pedidos.filter((p) => p.cuerpo.images)).toHaveLength(2);
+  } finally {
+    ollama.cerrar();
   }
 });
 
