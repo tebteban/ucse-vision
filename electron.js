@@ -21,8 +21,21 @@ const TIPOS = {
   '.woff2': 'font/woff2', '.woff': 'font/woff',
 };
 
+// Ollama (el LLM local que escribe descripciones) se pide como app://ucse/ollama/...: al ser el mismo origen no
+// choca con COOP/COEP ni depende de que Ollama acepte el origen app://.
+const OLLAMA = process.env.UCSE_OLLAMA ?? 'http://127.0.0.1:11434';
+
 async function servir(pedido) {
-  const ruta = path.normalize(path.join(DIST, decodeURIComponent(new URL(pedido.url).pathname)));
+  const { pathname } = new URL(pedido.url);
+  if (pathname.startsWith('/ollama/')) {
+    try {
+      const r = await net.fetch(OLLAMA + pathname.slice('/ollama'.length), { method: pedido.method, headers: { 'Content-Type': 'application/json' }, body: pedido.method === 'POST' ? await pedido.text() : undefined });
+      return new Response(r.body, { status: r.status, headers: { 'Content-Type': 'application/json', 'Cross-Origin-Resource-Policy': 'same-origin' } });
+    } catch {
+      return new Response('Ollama no responde', { status: 502 });
+    }
+  }
+  const ruta =path.normalize(path.join(DIST, decodeURIComponent(new URL(pedido.url).pathname)));
   if (!ruta.startsWith(DIST + path.sep)) return new Response('Prohibido', { status: 403 }); // nada fuera de dist/
   try {
     const r = await net.fetch(pathToFileURL(ruta).toString());

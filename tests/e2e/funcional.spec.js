@@ -1,6 +1,7 @@
 // Pruebas E2E funcionales: los flujos que se usan en la demo, sobre la app de escritorio real.
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import catalogo from '../../src/data/catalogo.json' with { type: 'json' };
@@ -82,6 +83,7 @@ test('enseñar un objeto nuevo en vivo, reconocerlo y que persista al reiniciar'
   await expect(page.locator('.marco')).toHaveCount(1);
   await page.getByRole('tab', { name: 'Enseñar' }).click();
   await page.getByLabel('Nombre').fill('Pastillero violeta');
+  await expect(page.locator('.campos .nota')).toContainText('Sin IA local'); // sin Ollama se completa a mano
   await page.locator('.campos select').selectOption('Electrónica');
   await page.getByLabel('Descripción corta').fill('Caja de prueba para el entrenamiento en vivo.');
   await page.getByRole('button', { name: /Ráfaga/ }).click();
@@ -136,6 +138,46 @@ test('exportar e importar la biblioteca; un archivo inválido no rompe nada', as
   await ctx.page.locator('input[type=file]').setInputFiles(destino);
   await expect(ctx.page.locator('.toast', { hasText: /1 objeto propio y 8 muestras/ })).toBeVisible();
   await expect(ctx.page.locator('.tabla-fila', { hasText: 'Objeto exportado' })).toContainText('8');
+});
+
+test('con Ollama, la IA escribe las descripciones a partir del nombre', async () => {
+  // Ollama falso: un modelo instalado y respuestas fijas; se anota qué le pidió la app
+  const pedidos = [];
+  const ficha = { resumen: 'Pastillero de prueba escrito por la IA.', detalle: 'Primer párrafo de la IA.\nSegundo párrafo de la IA.' };
+  const ollama = http.createServer((req, res) => {
+    let cuerpo = '';
+    req.on('data', (d) => (cuerpo += d));
+    req.on('end', () => {
+      pedidos.push({ url: req.url, cuerpo: cuerpo && JSON.parse(cuerpo) });
+      res.setHeader('Content-Type', 'application/json');
+      if (req.url === '/api/tags') return res.end(JSON.stringify({ models: [{ name: 'qwen2.5:3b' }] }));
+      res.end(JSON.stringify(JSON.parse(cuerpo).prompt ? { response: JSON.stringify(ficha) } : {})); // sin prompt: precarga
+    });
+  });
+  await new Promise((r) => ollama.listen(0, '127.0.0.1', r));
+  try {
+    ctx = await abrirApp('nuevo', { ollama: `http://127.0.0.1:${ollama.address().port}` });
+    const { page } = ctx;
+    await esperarLista(page, { escena: false });
+    await arrastrarVideo(page, NUEVO.a, NUEVO.b);
+    await page.getByRole('tab', { name: 'Enseñar' }).click();
+    await expect(page.locator('.campos .nota')).toContainText('qwen2.5:3b');
+    await page.getByLabel('Nombre').fill('Pastillero violeta');
+    await page.getByLabel('Nombre').press('Tab'); // al salir del nombre se escriben solas
+    await expect(page.getByLabel('Descripción corta')).toHaveValue(ficha.resumen);
+    await expect(page.getByLabel('Descripción larga')).toHaveValue(ficha.detalle);
+    const generar = pedidos.filter((p) => p.cuerpo?.prompt);
+    expect(generar).toHaveLength(1);
+    expect(generar[0].cuerpo.prompt).toContain('Pastillero violeta');
+    expect(pedidos.some((p) => p.url === '/api/generate' && !p.cuerpo.prompt)).toBe(true); // precargó el modelo
+    await page.getByRole('button', { name: /Ráfaga/ }).click();
+    await expect(page.locator('.minis img')).toHaveCount(8, { timeout: 60_000 });
+    await page.getByRole('button', { name: 'Guardar y reconocer' }).click();
+    await expect(page.locator('.ficha .lead')).toHaveText(ficha.resumen);
+    await expect(page.locator('.mas-caja p')).toHaveText(['Primer párrafo de la IA.', 'Segundo párrafo de la IA.']);
+  } finally {
+    ollama.close();
+  }
 });
 
 test('borrar muestras pide confirmación y "Muestras base" las restaura', async () => {

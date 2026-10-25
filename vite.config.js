@@ -14,6 +14,7 @@ export default defineConfig({
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
+    proxy: { '/ollama': { target: 'http://127.0.0.1:11434', rewrite: (p) => p.replace(/^\/ollama/, '') } }, // igual que electron.js
   },
   test: {
     include: ['tests/unit/**/*.test.js'], // tests/e2e son de Playwright

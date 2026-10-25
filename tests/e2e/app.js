@@ -7,7 +7,7 @@ import path from 'node:path';
 
 const RAIZ = path.resolve(import.meta.dirname, '../..');
 
-export async function abrirApp(escena = 'quieto', { perfil } = {}) {
+export async function abrirApp(escena = 'quieto', { perfil, ollama = 'http://127.0.0.1:9' } = {}) {
   const video = path.join(RAIZ, 'tests/.tmp', `${escena}.mjpeg`);
   if (!fs.existsSync(video)) throw new Error(`Falta ${video}: corré "node tests/fixtures/generar.mjs"`);
   const userData = perfil ?? fs.mkdtempSync(path.join(os.tmpdir(), 'ucse-prueba-'));
@@ -25,7 +25,7 @@ export async function abrirApp(escena = 'quieto', { perfil } = {}) {
       '--disable-renderer-backgrounding',
       '--enable-precise-memory-info',
     ],
-    env: { ...process.env, NODE_ENV: 'production', UCSE_TEST: '1', UCSE_USER_DATA: userData },
+    env: { ...process.env, NODE_ENV: 'production', UCSE_TEST: '1', UCSE_USER_DATA: userData, UCSE_OLLAMA: ollama }, // por defecto sin Ollama, aunque la PC lo tenga
   });
   const page = await app.firstWindow();
   await app.evaluate(({ BrowserWindow }) => {

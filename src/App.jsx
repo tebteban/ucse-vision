@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence, MotionConfig, useSpring, useTransform } from 'motion/react';
 import {
   Camera, ScanSearch, GraduationCap, LibraryBig, Loader2, Plus, Download, Upload, RotateCcw, Trash2,
-  ChevronDown, Aperture, X, Zap, MousePointerClick, LayoutGrid, Cpu, CircuitBoard, HeartPulse, FlaskConical, Cog, RefreshCw,
+  ChevronDown, Aperture, X, Zap, MousePointerClick, LayoutGrid, Cpu, CircuitBoard, HeartPulse, FlaskConical, Cog, RefreshCw, Sparkles,
 } from 'lucide-react';
 import { loadEmbedder, cropToCanvas, embed, reconocimientoOcupado, _matarReconocimiento } from './embedder.js';
 import { cargarSam, analizarEscena, recortesEn, alCambiarDispositivo, alPerderEscena, _matarSegmentacion, _analizarImagen } from './segmentador.js';
 import { elegirRecorte, siguienteRecorte } from './recorte.js';
+import { modeloDisponible, precargar, describir } from './descripciones.js';
 import { crearSeguidor, soltarSeguidor } from './seguidor.js';
 import { diferencia, diferenciaLocal, MINI_W, MINI_H } from './seguimiento.js';
 import { loadLibrary, saveLibrary, normalizar, match, efectiva, soloCategoria, restaurarBase, borrarObjeto, baseIds } from './library.js';
@@ -113,6 +114,9 @@ export default function App() {
   const [verMas, setVerMas] = useState(true);
   const [teach, setTeach] = useState(teachVacio);
   const [porBorrar, setPorBorrar] = useState(null);
+  const [llm, setLlm] = useState(null); // modelo de Ollama que escribe las descripciones, o null si no hay
+  const [escribiendo, setEscribiendo] = useState(false);
+  const escribiendoRef = useRef(false); // el blur del nombre y el clic del botón llegan juntos
 
   // posición del recuadro en % del video, animada sin pasar por React (sin re-render en cada cuadro)
   const mx = useSpring(0, RESORTE);
@@ -430,6 +434,15 @@ export default function App() {
     accionesRef.current = { segmentar, identificar, avisar };
   });
 
+  // Al abrir Enseñar se busca Ollama (puede haberse abierto después que la app) y se precarga el modelo.
+  useEffect(() => {
+    if (tab !== 'ensenar' || llm) return;
+    modeloDisponible().then((m) => {
+      setLlm(m);
+      if (m) precargar(m);
+    });
+  }, [tab, llm]);
+
   // Re-identifica de vez en cuando mientras se sigue el objeto, y al cambiar de categoría.
   useEffect(() => {
     const id = setInterval(() => {
@@ -576,6 +589,24 @@ export default function App() {
     setTeach(teachVacio);
     setTab('identificar');
     if (cajaRef.current) identificar(cajaRef.current);
+  }
+
+  async function escribirConIA() {
+    const nombre = teach.nombre.trim();
+    if (!llm || !nombre || escribiendoRef.current) return;
+    escribiendoRef.current = true;
+    setEscribiendo(true);
+    try {
+      const ejemplo = base.objetos.find((o) => o.categoria === teach.categoria && o.detalle) ?? base.objetos[0];
+      const d = await describir(llm, nombre, teach.categoria, ejemplo);
+      setTeach((t) => (t.nombre.trim() === nombre && !t.target ? { ...t, ...d } : t)); // si cambió el nombre o ya se guardó, se descarta
+    } catch (e) {
+      console.error('Descripción con IA:', e);
+      avisar('No se pudo escribir la descripción con IA. Podés completarla a mano.');
+    } finally {
+      escribiendoRef.current = false;
+      setEscribiendo(false);
+    }
   }
 
   const puedeGuardar = teach.muestras.length >= 3 && (teach.target || teach.nombre.trim());
@@ -960,15 +991,27 @@ export default function App() {
                     <AnimatePresence initial={false}>
                       {!teach.target && (
                         <motion.div className="campos" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
-                          <label>Nombre<input value={teach.nombre} maxLength={120} onChange={(e) => setTeach({ ...teach, nombre: e.target.value })} placeholder="Ej: Sensor de temperatura" /></label>
+                          <label>Nombre<input value={teach.nombre} maxLength={120} onChange={(e) => setTeach({ ...teach, nombre: e.target.value })} onBlur={() => !teach.resumen.trim() && !teach.detalle.trim() && escribirConIA()} placeholder="Ej: Sensor de temperatura" /></label>
                           <label>Categoría
                             <select value={teach.categoria} onChange={(e) => setTeach({ ...teach, categoria: e.target.value })}>
                               <option>Informática</option>
                               <option>Electrónica</option>
                             </select>
                           </label>
-                          <label>Descripción corta<textarea rows={2} maxLength={300} value={teach.resumen} onChange={(e) => setTeach({ ...teach, resumen: e.target.value })} placeholder="Qué es, en una oración." /></label>
-                          <label>Descripción larga<textarea rows={4} maxLength={2000} value={teach.detalle} onChange={(e) => setTeach({ ...teach, detalle: e.target.value })} placeholder="Cómo funciona, para qué se usa, datos clave." /></label>
+                          <label>Descripción corta<textarea rows={2} maxLength={300} value={teach.resumen} disabled={escribiendo} onChange={(e) => setTeach({ ...teach, resumen: e.target.value })} placeholder={escribiendo ? 'Escribiendo…' : 'Qué es, en una oración.'} /></label>
+                          <label>Descripción larga<textarea rows={4} maxLength={2000} value={teach.detalle} disabled={escribiendo} onChange={(e) => setTeach({ ...teach, detalle: e.target.value })} placeholder={escribiendo ? 'Escribiendo…' : 'Cómo funciona, para qué se usa, datos clave.'} /></label>
+                          {llm ? (
+                            <>
+                              <div className="fila">
+                                <button className="pill sutil" disabled={!teach.nombre.trim() || escribiendo} onClick={escribirConIA}>
+                                  {escribiendo ? <Loader2 size={16} className="giro" aria-hidden="true" /> : <Sparkles size={16} aria-hidden="true" />} {escribiendo ? 'Escribiendo…' : 'Escribir con IA'}
+                                </button>
+                              </div>
+                              <p className="nota">La IA local ({llm}) escribe las descripciones a partir del nombre. Revisalas antes de guardar.</p>
+                            </>
+                          ) : (
+                            <p className="nota">Sin IA local (Ollama) en esta PC: completá las descripciones a mano.</p>
+                          )}
                         </motion.div>
                       )}
                     </AnimatePresence>

@@ -18,6 +18,14 @@ Los tres modelos corren en Web Workers, así la interfaz y la cámara nunca se t
 desde `app://` con la página aislada (COOP/COEP): eso permite que la segmentación use varios núcleos de la CPU
 en lugar de la GPU, que congelaba el video mientras calculaba.
 
+### Descripciones con IA local (opcional)
+
+En **Enseñar**, al escribir el nombre de un objeto nuevo, un LLM local escribe la descripción corta y la larga
+(`src/descripciones.js`); quedan editables antes de guardar. Usa [Ollama](https://ollama.com) si está instalado
+y abierto en la PC: elige `qwen2.5:3b` si lo tiene (entra en 4 GB de VRAM), si no otro modelo de texto instalado.
+Para tenerlo: `ollama pull qwen2.5:3b`. Sin Ollama, las descripciones se completan a mano como siempre.
+La app le habla por `app://ucse/ollama/` (lo reenvía `electron.js`; otra dirección con la variable `UCSE_OLLAMA`).
+
 ## Comandos
 
 ```bash
