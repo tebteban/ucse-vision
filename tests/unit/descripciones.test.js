@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { modeloDisponible, enGPU, describir, nombrar, separarFicha } from '../../src/descripciones.js';
+import { modeloDisponible, enGPU, describir, nombrar, elegir, separarFicha } from '../../src/descripciones.js';
+import { combinar } from '../../src/library.js';
 
 // Respuesta de /api/generate como la manda Ollama: una línea JSON por pedazo de texto. cortes: en cuántos pedazos de
 // bytes llega (para probar líneas partidas entre dos pedazos).
@@ -103,5 +104,35 @@ describe('nombrar', () => {
   it('si no distingue ningún objeto, falla', async () => {
     ollama({ generate: () => enVivo('NINGUNO') });
     await expect(nombrar('m', 'x')).rejects.toThrow(/no distinguió/);
+  });
+});
+
+describe('elegir (la IA confirma un candidato de CLIP)', () => {
+  const nombres = ['Procesador (CPU)', 'Memoria RAM', 'Disco SSD'];
+  it('devuelve el índice del candidato que elige, con la lista numerada en el pedido', async () => {
+    ollama({ generate: () => enVivo('2') });
+    expect(await elegir('gemma3:4b', 'QUJD', nombres)).toBe(1);
+    const pedido = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(pedido.images).toEqual(['QUJD']);
+    expect(pedido.prompt).toContain('1. Procesador (CPU)\n2. Memoria RAM\n3. Disco SSD\n4. Ninguno de estos');
+  });
+  it('acepta texto alrededor del número', async () => {
+    ollama({ generate: () => enVivo('**Respuesta:** 1. Procesador (CPU)') });
+    expect(await elegir('m', 'x', nombres)).toBe(0);
+  });
+  it('null si dice "ninguno", un número fuera de la lista o nada', async () => {
+    for (const r of ['4', 'Ninguno de estos', '9', '0', 'no sé']) {
+      ollama({ generate: () => enVivo(r) });
+      expect(await elegir('m', 'x', nombres), r).toBeNull();
+    }
+  });
+});
+
+describe('combinar (porcentaje cuando la IA confirma)', () => {
+  it('sube el puntaje de CLIP según la fiabilidad de la IA', () => {
+    expect(combinar(0.8, 0.75)).toBeCloseTo(0.95);
+    expect(combinar(0.6, 0.75)).toBeCloseTo(0.9);
+    expect(combinar(0.8, 0)).toBeCloseTo(0.8); // una IA que no sabe nada no cambia nada
+    expect(combinar(0.9)).toBeGreaterThan(0.9);
   });
 });

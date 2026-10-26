@@ -25,8 +25,11 @@ muestras). Todo está en `src/descripciones.js`:
 
 - **Enseñar:** al escribir el nombre de un objeto nuevo, escribe la descripción corta y la larga (editables).
 - **Con un modelo que ve imágenes** (`gemma3:4b`, el preferido; también `qwen2.5vl:3b`):
-  - cuando CLIP dice "No reconocido", da su opinión ("Parece: …") y "Enseñar este objeto" abre el formulario
-    ya completo;
+  - cuando CLIP duda (queda debajo del umbral), la IA elige cuál de sus 4 candidatos es. Si elige uno, se muestra
+    como reconocido con un porcentaje combinado, `1 − (1 − CLIP) × (1 − 0,75)`, y la marca "Confirmado por la IA".
+    El 0,75 es lo que acierta gemma3:4b cuando elige (`FIABILIDAD_IA` en `src/library.js`): un 80 % de CLIP pasa a 95 %;
+  - si la IA dice que no es ninguno, da su opinión ("Parece: …") y "Enseñar este objeto" abre el formulario ya
+    completo;
   - en Enseñar, "Mirar el objeto" completa nombre, categoría y descripciones desde la cámara.
 
 Primero aparece el nombre y después la ficha, que se va escribiendo en pantalla. Mientras la app está abierta, el

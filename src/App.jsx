@@ -7,10 +7,10 @@ import {
 import { loadEmbedder, cropToCanvas, embed, reconocimientoOcupado, _matarReconocimiento } from './embedder.js';
 import { cargarSam, analizarEscena, recortesEn, alCambiarDispositivo, alPerderEscena, _matarSegmentacion, _analizarImagen } from './segmentador.js';
 import { elegirRecorte, siguienteRecorte } from './recorte.js';
-import { modeloDisponible, precargar, enGPU, describir, nombrar } from './descripciones.js';
+import { modeloDisponible, precargar, enGPU, describir, nombrar, elegir } from './descripciones.js';
 import { crearSeguidor, soltarSeguidor } from './seguidor.js';
 import { diferencia, diferenciaLocal, MINI_W, MINI_H } from './seguimiento.js';
-import { loadLibrary, saveLibrary, normalizar, match, efectiva, soloCategoria, restaurarBase, borrarObjeto, baseIds } from './library.js';
+import { loadLibrary, saveLibrary, normalizar, match, efectiva, soloCategoria, restaurarBase, borrarObjeto, baseIds, combinar } from './library.js';
 import { Numero, Anillo, Splash } from './ui.jsx';
 
 const MIN_ARRASTRE = 8; // px de pantalla: menos que esto es un clic, más es un encuadre manual
@@ -678,11 +678,17 @@ export default function App() {
 
   const cuentas = base.muestras.reduce((c, m) => ((c[m.id] = (c[m.id] || 0) + 1), c), {});
   const maxCuenta = Math.max(1, ...Object.values(cuentas));
-  const actual = res?.ranking[res.indice];
+  const opinionActual = opinion && fijado && opinion.n === fijado.n ? opinion : null; // la de este objeto fijado
+  // El candidato que se muestra: el elegido en la lista o, si no se tocó la lista, el que confirmó la IA (con el
+  // puntaje combinado de CLIP y la IA).
+  const confirmado = opinionActual?.confirmado;
+  const candidato = (res?.indice === 0 && confirmado && res.ranking.find((r) => r.objeto.id === confirmado)) || res?.ranking[res.indice];
+  const actual = candidato && candidato.objeto.id === confirmado ? { ...candidato, score: combinar(candidato.score), ia: true } : candidato;
   const reconocido = actual && actual.score >= umbral;
   const perdido = fijado?.perdido;
   const etiqueta = !fijado ? '' : perdido ? 'Objeto perdido' : busy && !res ? 'Analizando…' : tab !== 'identificar' ? 'Objeto fijado' : actual ? (reconocido ? actual.objeto.nombre : 'No reconocido') : falloIdent ? 'Reintentando…' : 'Analizando…';
-  // Si CLIP no lo reconoce y el modelo ve imágenes, se le pregunta qué es (una vez por objeto fijado).
+  // Si CLIP duda y el modelo ve imágenes, se le pregunta a la IA (una vez por objeto fijado): primero cuál de los
+  // candidatos de CLIP es; si ninguno, qué objeto es, para poder enseñarlo.
   const noReconocido = tab === 'identificar' && fijado && !perdido && !busy && actual && !reconocido;
   useEffect(() => {
     if (!noReconocido || !llm?.vision || opinion?.n === fijado.n || !cajaRef.current) return;
@@ -691,8 +697,16 @@ export default function App() {
     const poner = (cambios) => setOpinion((o) => (o?.n === n ? { ...o, ...cambios } : o));
     setOpinion({ n });
     (async () => {
-      // primero el nombre (se muestra apenas está), después la ficha, que aparece mientras se escribe
-      const { nombre, categoria } = await nombrar(llm.nombre, fotoDe(videoRef.current, cajaRef.current));
+      const foto = fotoDe(videoRef.current, cajaRef.current);
+      const candidatos = res.ranking.slice(0, 4).map((r) => r.objeto);
+      const k = await elegir(llm.nombre, foto, candidatos.map((o) => o.nombre));
+      if (k !== null) {
+        poner({ confirmado: candidatos[k].id });
+        medirIA(t0);
+        return;
+      }
+      // ninguno: primero el nombre (se muestra apenas está), después la ficha, que aparece mientras se escribe
+      const { nombre, categoria } = await nombrar(llm.nombre, foto);
       poner({ ficha: { nombre, categoria, resumen: '', detalle: '' } });
       const f = await describir(llm.nombre, nombre, categoria, ejemploDe(categoria), (p) => poner({ ficha: { nombre, categoria, ...p } }));
       poner({ ficha: { nombre, categoria, ...f }, listo: true });
@@ -701,8 +715,7 @@ export default function App() {
       console.error('Opinión de la IA:', e);
       poner({ error: true });
     });
-  }, [noReconocido, llm, fijado, opinion, ejemploDe, medirIA]);
-  const opinionActual = opinion && fijado && opinion.n === fijado.n ? opinion : null; // la de este objeto fijado
+  }, [noReconocido, llm, fijado, opinion, res, ejemploDe, medirIA]);
   const sugerida = opinionActual?.ficha; // la ficha que propuso la IA (a medio escribir hasta que listo)
   const mostrarResumen = fijado && !perdido && tab === 'identificar' && reconocido;
   const splash = splashMin || modelo === 'cargando' || estadoCam === 'iniciando';
@@ -969,6 +982,7 @@ export default function App() {
                           <div>
                             <span className="eyebrow">{reconocido ? actual.objeto.categoria : 'Sin coincidencia'}</span>
                             <h2>{reconocido ? actual.objeto.nombre : 'No reconocido'}</h2>
+                            {actual.ia && <span className="confirmado"><Sparkles size={14} aria-hidden="true" /> Confirmado por la IA</span>}
                           </div>
                         </motion.div>
                         {reconocido ? (
@@ -1008,7 +1022,7 @@ export default function App() {
                                 ) : opinionActual.error ? (
                                   <p>La IA tampoco pudo decir qué es.</p>
                                 ) : (
-                                  <p><Loader2 size={14} className="giro" aria-hidden="true" /> Mirando el objeto…</p>
+                                  <p><Loader2 size={14} className="giro" aria-hidden="true" /> Verificando con la IA…</p>
                                 )}
                               </motion.div>
                             )}
@@ -1021,7 +1035,7 @@ export default function App() {
                           <motion.div className="otros" variants={aparecer} custom={3}>
                             <h3>Candidatos</h3>
                             {res.ranking.slice(0, 4).map((r, i) => (
-                              <button key={r.objeto.id} className={i === res.indice ? 'otro on' : 'otro'} onClick={() => { setRes({ ...res, indice: i }); setVerMas(true); }}>
+                              <button key={r.objeto.id} className={r.objeto.id === actual.objeto.id ? 'otro on' : 'otro'} onClick={() => { setRes({ ...res, indice: i }); setVerMas(true); }}>
                                 <span className="otro-nombre">{r.objeto.nombre}</span>
                                 <span className="otro-pct">{Math.round(r.score * 100)}%</span>
                                 <span className="otro-barra">

@@ -106,3 +106,12 @@ Si no se distingue ningún objeto, respondé solo: NINGUNO`;
   if (!nombre || /^ninguno/i.test(nombre)) throw new Error('La IA no distinguió ningún objeto');
   return { nombre, categoria: /electr/i.test(segunda) ? 'Electrónica' : 'Informática' };
 }
+
+// Cuál de los candidatos de CLIP es el objeto de la foto (índice), o null si ninguno. Elegir entre opciones es más
+// confiable y rápido que nombrar libre: la respuesta es un número.
+export async function elegir(modelo, imagen, nombres) {
+  const opciones = [...nombres, 'Ninguno de estos'].map((n, i) => `${i + 1}. ${n}`).join('\n');
+  const prompt = `La foto muestra un objeto frente a una cámara. ¿Cuál de estos es?\n${opciones}\nRespondé solo con el número.`;
+  const n = Number((await pedir(modelo, prompt, imagen)).match(/\d+/)?.[0]);
+  return n >= 1 && n <= nombres.length ? n - 1 : null;
+}

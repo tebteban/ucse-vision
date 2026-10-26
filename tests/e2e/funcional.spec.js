@@ -143,7 +143,8 @@ test('exportar e importar la biblioteca; un archivo inválido no rompe nada', as
 
 // Ollama falso: un modelo instalado y respuestas fijas en texto, como las de un modelo real; anota qué le pidió la app.
 const FICHA_IA = { resumen: 'Pastillero de prueba escrito por la IA.', detalle: 'Primer párrafo de la IA.\nSegundo párrafo de la IA.' };
-async function ollamaFalso(modelo, { vision = false, nombre = 'Pastillero violeta' } = {}) {
+// eleccion: qué responde cuando se le pide elegir entre los candidatos de CLIP (por defecto, ninguno).
+async function ollamaFalso(modelo, { vision = false, nombre = 'Pastillero violeta', eleccion = 'Ninguno de estos' } = {}) {
   const pedidos = [];
   const servidor = http.createServer((req, res) => {
     let cuerpo = '';
@@ -156,7 +157,7 @@ async function ollamaFalso(modelo, { vision = false, nombre = 'Pastillero violet
       if (req.url === '/api/show') return res.end(JSON.stringify({ capabilities: vision ? ['completion', 'vision'] : ['completion'] }));
       if (req.url === '/api/ps') return res.end(JSON.stringify({ models: [{ name: modelo, size: 3000, size_vram: 3000 }] }));
       if (!b.prompt) return res.end('{}'); // precarga
-      const respuesta = b.images ? `1. ${nombre}\n2. Electrónica` : `${FICHA_IA.resumen}\n\n${FICHA_IA.detalle.replace('\n', '\n\n')}`;
+      const respuesta = b.prompt.includes('Ninguno de estos') ? eleccion : b.images ? `1. ${nombre}\n2. Electrónica` : `${FICHA_IA.resumen}\n\n${FICHA_IA.detalle.replace('\n', '\n\n')}`;
       // en vivo, como Ollama: una línea JSON por pedazo de texto
       for (const pedazo of respuesta.match(/.{1,12}/gs)) res.write(JSON.stringify({ response: pedazo, done: false }) + '\n');
       res.end(JSON.stringify({ response: '', done: true }) + '\n');
@@ -208,8 +209,10 @@ test('con un modelo que ve imágenes: opina sobre lo que CLIP no reconoce y comp
     await expect(page.locator('.ficha h2')).toHaveText('No reconocido');
     await expect(page.locator('.opinion-nombre')).toHaveText('Parece: Pastillero violeta');
     await expect(page.locator('.opinion')).toContainText(FICHA_IA.resumen);
+    // una sola vez por objeto fijado, aunque CLIP lo re-identifique: elegir entre los candidatos (dijo "ninguno") y nombrarlo
     const vistas = ollama.pedidos.filter((p) => p.cuerpo.images);
-    expect(vistas).toHaveLength(1); // una sola consulta por objeto fijado, aunque CLIP lo re-identifique
+    expect(vistas).toHaveLength(2);
+    expect(vistas[0].cuerpo.prompt).toContain('Ninguno de estos');
     expect(vistas[0].cuerpo.images[0].length).toBeGreaterThan(1000); // le mandó la foto del recorte
     await page.getByRole('button', { name: 'Enseñar este objeto' }).click();
     await expect(page.getByLabel('Nombre')).toHaveValue('Pastillero violeta');
@@ -224,7 +227,33 @@ test('con un modelo que ve imágenes: opina sobre lo que CLIP no reconoce y comp
     await expect(page.locator('.medidor')).toHaveText(/^Modelo entero en la GPU · última respuesta en \d+\.\d\ss$/);
     await capturarYGuardar(page);
     await page.waitForTimeout(3000); // ya reconocido por CLIP: no se le vuelve a preguntar a la IA
-    expect(ollama.pedidos.filter((p) => p.cuerpo.images)).toHaveLength(2);
+    expect(ollama.pedidos.filter((p) => p.cuerpo.images)).toHaveLength(3);
+  } finally {
+    ollama.cerrar();
+  }
+});
+
+test('cuando CLIP duda, la IA confirma un candidato y el porcentaje sube', async () => {
+  const ollama = await ollamaFalso('gemma3:4b', { vision: true, eleccion: '1' });
+  try {
+    ctx = await abrirApp('quieto', { ollama: ollama.url });
+    const { page } = ctx;
+    await esperarLista(page);
+    // umbral de 95 %: CLIP le da ~90 % al procesador de la escena, así que duda
+    await page.getByRole('tab', { name: 'Biblioteca' }).click();
+    await page.getByLabel(/Umbral de reconocimiento/).fill('0.95');
+    await page.getByRole('tab', { name: 'Identificar' }).click();
+    await clicVideo(page, OBJETO.x, OBJETO.y);
+    await expect(page.locator('.ficha h2')).toHaveText(OBJETO.nombre);
+    await expect(page.locator('.confirmado')).toHaveText('Confirmado por la IA');
+    const pct = async (loc) => Number((await page.locator(loc).first().innerText()).match(/(\d+)%/)[1]);
+    const clip = await pct('.otros .otro-pct'); // la lista de candidatos sigue mostrando lo que dijo CLIP solo
+    expect(clip).toBeLessThan(95);
+    await expect.poll(() => pct('.rotulo em')).toBeGreaterThanOrEqual(95); // combinado: CLIP y la IA coinciden
+    const elegir = ollama.pedidos.filter((p) => p.cuerpo.prompt?.includes('Ninguno de estos'));
+    expect(elegir).toHaveLength(1);
+    expect(elegir[0].cuerpo.prompt).toContain(`1. ${OBJETO.nombre}`);
+    expect(ollama.pedidos.filter((p) => p.cuerpo.images)).toHaveLength(1); // confirmó: no hace falta nombrarlo
   } finally {
     ollama.cerrar();
   }
