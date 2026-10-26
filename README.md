@@ -25,9 +25,15 @@ muestras). Todo está en `src/descripciones.js`:
 
 - **Enseñar:** al escribir el nombre de un objeto nuevo, escribe la descripción corta y la larga (editables).
 - **Con un modelo que ve imágenes** (`gemma3:4b`, el preferido; también `qwen2.5vl:3b`):
-  - cuando CLIP duda (queda debajo del umbral), la IA elige cuál de sus 4 candidatos es. Si elige uno, se muestra
-    como reconocido con un porcentaje combinado, `1 − (1 − CLIP) × (1 − 0,75)`, y la marca "Confirmado por la IA".
-    El 0,75 es lo que acierta gemma3:4b cuando elige (`FIABILIDAD_IA` en `src/library.js`): un 80 % de CLIP pasa a 95 %;
+  - cuando CLIP duda (queda debajo del umbral), la IA dice qué objeto es y, solo con texto, se le pregunta por sí o
+    por no si eso es cada uno de los 4 candidatos de CLIP ("¿Una cámara digital Nikon es un celular?"). Si confirma
+    uno, se muestra como reconocido con un porcentaje combinado, `1 − (1 − CLIP) × (1 − 0,73)`, y la marca
+    "Confirmado por la IA". El 0,73 es lo que acierta gemma3:4b cuando confirma (`FIABILIDAD_IA` en
+    `src/library.js`): un 80 % de CLIP pasa a 95 %. Pedirle que eligiera de una lista no servía: casi nunca decía
+    "ninguno", y una cámara de fotos terminaba como "Celular";
+  - si CLIP estaba seguro, la IA igual lo verifica al escribir la descripción larga: si ve otra cosa (algo que no
+    está en el catálogo), pasa a "No reconocido" con su opinión. Medido: mantiene el 95 % de los objetos del catálogo
+    bien reconocidos y descarta el 76 % de los que no están (el 91 % de las cámaras de fotos);
   - con el objeto reconocido, la descripción corta es la del catálogo (genérica) y la larga la escribe la IA en el
     momento para ese objeto en particular: primero dice qué es exactamente ("Control de Xbox", "iPhone") y después
     escribe dos párrafos, con la marca "Escrito por la IA para este objeto". Sin IA que vea imágenes, o si falla,

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { modeloDisponible, enGPU, describir, nombrar, elegir, especificar, separarFicha } from '../../src/descripciones.js';
+import { modeloDisponible, enGPU, describir, nombrar, confirmar, especificar, separarFicha } from '../../src/descripciones.js';
 import { combinar } from '../../src/library.js';
 
 // Respuesta de /api/generate como la manda Ollama: una línea JSON por pedazo de texto. cortes: en cuántos pedazos de
@@ -107,23 +107,27 @@ describe('nombrar', () => {
   });
 });
 
-describe('elegir (la IA confirma un candidato de CLIP)', () => {
-  const nombres = ['Procesador (CPU)', 'Memoria RAM', 'Disco SSD'];
-  it('devuelve el índice del candidato que elige, con la lista numerada en el pedido', async () => {
-    ollama({ generate: () => enVivo('2') });
-    expect(await elegir('gemma3:4b', 'QUJD', nombres)).toBe(1);
-    const pedido = JSON.parse(fetch.mock.calls[0][1].body);
-    expect(pedido.images).toEqual(['QUJD']);
-    expect(pedido.prompt).toContain('1. Procesador (CPU)\n2. Memoria RAM\n3. Disco SSD\n4. Ninguno de estos');
+describe('confirmar (la IA confirma un candidato de CLIP, o ninguno)', () => {
+  const nombres = ['Celular (smartphone)', 'Cámara web', 'Procesador (CPU)'];
+  // responde "sí" solo cuando la pregunta es por el tipo indicado
+  const siPara = (tipo) => ollama({ generate: (b) => enVivo(b.prompt.includes(`es un "${tipo}"`) ? 'Sí.' : 'No.') });
+  it('una pregunta de sí o no por candidato, en orden y solo con texto; se queda con el primero que da sí', async () => {
+    siPara('Procesador (CPU)');
+    expect(await confirmar('gemma3:4b', 'Intel Core i7', nombres)).toBe(2);
+    const pedidos = fetch.mock.calls.map((c) => JSON.parse(c[1].body));
+    expect(pedidos).toHaveLength(3);
+    expect(pedidos[0].prompt).toContain('"Intel Core i7" es un "Celular (smartphone)"');
+    expect(pedidos.every((p) => !p.images)).toBe(true);
   });
-  it('acepta texto alrededor del número', async () => {
-    ollama({ generate: () => enVivo('**Respuesta:** 1. Procesador (CPU)') });
-    expect(await elegir('m', 'x', nombres)).toBe(0);
+  it('null si no es ninguno (una cámara de fotos no es un celular)', async () => {
+    siPara('nada');
+    expect(await confirmar('m', 'Cámara digital Nikon', nombres)).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
-  it('null si dice "ninguno", un número fuera de la lista o nada', async () => {
-    for (const r of ['4', 'Ninguno de estos', '9', '0', 'no sé']) {
+  it('acepta "sí" con tilde, sin tilde o con adornos, y no confunde "sin…" con sí', async () => {
+    for (const [r, esperado] of [['Sí', 0], ['si', 0], ['**Sí**, es un celular.', 0], ['Sin dudas no.', null], ['No', null]]) {
       ollama({ generate: () => enVivo(r) });
-      expect(await elegir('m', 'x', nombres), r).toBeNull();
+      expect(await confirmar('m', 'x', ['Celular']), r).toBe(esperado);
     }
   });
 });

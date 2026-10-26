@@ -7,7 +7,7 @@ import {
 import { loadEmbedder, cropToCanvas, embed, reconocimientoOcupado, _matarReconocimiento } from './embedder.js';
 import { cargarSam, analizarEscena, recortesEn, alCambiarDispositivo, alPerderEscena, _matarSegmentacion, _analizarImagen } from './segmentador.js';
 import { elegirRecorte, siguienteRecorte } from './recorte.js';
-import { modeloDisponible, precargar, enGPU, describir, nombrar, elegir, especificar } from './descripciones.js';
+import { modeloDisponible, precargar, enGPU, describir, nombrar, confirmar, especificar } from './descripciones.js';
 import { crearSeguidor, soltarSeguidor } from './seguidor.js';
 import { diferencia, diferenciaLocal, MINI_W, MINI_H } from './seguimiento.js';
 import { loadLibrary, saveLibrary, normalizar, match, efectiva, soloCategoria, restaurarBase, borrarObjeto, baseIds, combinar } from './library.js';
@@ -685,12 +685,23 @@ export default function App() {
   const confirmado = opinionActual?.confirmado;
   const candidato = (res?.indice === 0 && confirmado && res.ranking.find((r) => r.objeto.id === confirmado)) || res?.ranking[res.indice];
   const actual = candidato && candidato.objeto.id === confirmado ? { ...candidato, score: combinar(candidato.score), ia: true } : candidato;
-  const reconocido = actual && actual.score >= umbral;
+  // los candidatos que la IA ya dijo que este objeto no es: CLIP no lo hace pasar por uno de ellos aunque al
+  // re-identificarlo cruce el umbral (sí por otro, por ejemplo el objeto que se le acaba de enseñar)
+  const descartadoPorIA = !!opinionActual?.descartados?.includes(actual?.objeto.id);
+  const reconocido = actual && actual.score >= umbral && !descartadoPorIA;
   const perdido = fijado?.perdido;
   const etiqueta = !fijado ? '' : perdido ? 'Objeto perdido' : busy && !res ? 'Analizando…' : tab !== 'identificar' ? 'Objeto fijado' : actual ? (reconocido ? actual.objeto.nombre : 'No reconocido') : falloIdent ? 'Reintentando…' : 'Analizando…';
-  // Si CLIP duda y el modelo ve imágenes, se le pregunta a la IA (una vez por objeto fijado): primero cuál de los
-  // candidatos de CLIP es; si ninguno, qué objeto es, para poder enseñarlo.
+  // Si CLIP duda y el modelo ve imágenes, se le pregunta a la IA (una vez por objeto fijado) qué objeto es, y después
+  // si eso es alguno de los candidatos de CLIP. Si no es ninguno (algo que no está en el catálogo, como una cámara de
+  // fotos), queda su opinión ("Parece: …") para poder enseñarlo.
   const noReconocido = tab === 'identificar' && fijado && !perdido && !busy && actual && !reconocido;
+  // La opinión de la IA sobre un objeto que no es ninguno del catálogo: su nombre ya, la ficha mientras se escribe.
+  const opinar = useCallback(async (n, nombre, categoria) => {
+    const poner = (cambios) => setOpinion((o) => (o?.n === n ? { ...o, ...cambios } : o));
+    poner({ ficha: { nombre, categoria, resumen: '', detalle: '' } });
+    const f = await describir(llm.nombre, nombre, categoria, ejemploDe(categoria), (p) => poner({ ficha: { nombre, categoria, ...p } }));
+    poner({ ficha: { nombre, categoria, ...f }, listo: true });
+  }, [llm, ejemploDe]);
   useEffect(() => {
     if (!noReconocido || !llm?.vision || opinion?.n === fijado.n || !cajaRef.current) return;
     const { n } = fijado;
@@ -700,30 +711,33 @@ export default function App() {
     (async () => {
       const foto = fotoDe(videoRef.current, cajaRef.current);
       const candidatos = res.ranking.slice(0, 4).map((r) => r.objeto);
-      const k = await elegir(llm.nombre, foto, candidatos.map((o) => o.nombre));
+      const { nombre, categoria } = await nombrar(llm.nombre, foto);
+      const k = await confirmar(llm.nombre, nombre, candidatos.map((o) => o.nombre));
       if (k !== null) {
-        poner({ confirmado: candidatos[k].id });
+        poner({ confirmado: candidatos[k].id, nombre }); // el nombre sirve de título a su descripción larga
         medirIA(t0);
         return;
       }
-      // ninguno: primero el nombre (se muestra apenas está), después la ficha, que aparece mientras se escribe
-      const { nombre, categoria } = await nombrar(llm.nombre, foto);
-      poner({ ficha: { nombre, categoria, resumen: '', detalle: '' } });
-      const f = await describir(llm.nombre, nombre, categoria, ejemploDe(categoria), (p) => poner({ ficha: { nombre, categoria, ...p } }));
-      poner({ ficha: { nombre, categoria, ...f }, listo: true });
+      poner({ descartados: candidatos.map((o) => o.id) });
+      await opinar(n, nombre, categoria);
       medirIA(t0);
     })().catch((e) => {
       console.error('Opinión de la IA:', e);
       poner({ error: true });
     });
-  }, [noReconocido, llm, fijado, opinion, res, ejemploDe, medirIA]);
+  }, [noReconocido, llm, fijado, opinion, res, opinar, medirIA]);
   const sugerida = opinionActual?.ficha; // la ficha que propuso la IA (a medio escribir hasta que listo)
 
   // Objeto reconocido y modelo que ve imágenes: la descripción larga la escribe la IA para este objeto en particular
   // (primero qué es exactamente, por ejemplo "Control de Xbox", después dos párrafos que aparecen mientras se
   // escriben). La corta sigue siendo la del catálogo. Una vez por objeto fijado.
+  // Si CLIP estaba seguro, de paso se verifica: si lo que ve la IA no es de ese tipo (una cámara de fotos que CLIP
+  // tomó por micrófono), pasa a "No reconocido" con su opinión. Medido con gemma3:4b: mantiene el 95 % de los
+  // objetos del catálogo bien reconocidos y descarta el 76 % de los que no están en el catálogo.
   const reconocidoAhora = tab === 'identificar' && fijado && !perdido && reconocido;
   const objetoActual = actual?.objeto;
+  // si la IA ya lo nombró al confirmarlo, ese nombre; si no (CLIP estaba seguro), se le pregunta
+  const nombreIA = confirmado === objetoActual?.id ? opinionActual?.nombre : null;
   useEffect(() => {
     if (!reconocidoAhora || !llm?.vision || larga?.n === fijado.n || !cajaRef.current) return;
     const { n } = fijado;
@@ -732,7 +746,14 @@ export default function App() {
     const poner = (cambios) => setLarga((l) => (l?.n === n ? { ...l, ...cambios } : l));
     setLarga({ n, id: o.id });
     (async () => {
-      const nombre = await especificar(llm.nombre, fotoDe(videoRef.current, cajaRef.current), o.nombre);
+      const nombre = nombreIA ?? (await especificar(llm.nombre, fotoDe(videoRef.current, cajaRef.current), o.nombre));
+      if (!nombreIA && (await confirmar(llm.nombre, nombre, [o.nombre])) === null) {
+        setOpinion({ n, descartados: [o.id] });
+        poner({ error: true });
+        await opinar(n, nombre, o.categoria);
+        medirIA(t0);
+        return;
+      }
       poner({ nombre });
       const f = await describir(llm.nombre, nombre, o.categoria, ejemploDe(o.categoria), (p) => poner({ detalle: p.detalle }));
       poner({ detalle: f.detalle, listo: true });
@@ -741,7 +762,7 @@ export default function App() {
       console.error('Descripción larga con IA:', e);
       poner({ error: true }); // queda la del catálogo
     });
-  }, [reconocidoAhora, llm, fijado, larga, objetoActual, ejemploDe, medirIA]);
+  }, [reconocidoAhora, llm, fijado, larga, objetoActual, nombreIA, ejemploDe, opinar, medirIA]);
   // la de este objeto fijado y del objeto que se está mostrando (si se elige otro candidato de la lista, la del catálogo)
   const largaActual = larga && fijado && larga.n === fijado.n && larga.id === actual?.objeto.id && !larga.error ? larga : null;
   const mostrarResumen = fijado && !perdido && tab === 'identificar' && reconocido;

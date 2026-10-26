@@ -107,13 +107,16 @@ Si no se distingue ningún objeto, respondé solo: NINGUNO`;
   return { nombre, categoria: /electr/i.test(segunda) ? 'Electrónica' : 'Informática' };
 }
 
-// Cuál de los candidatos de CLIP es el objeto de la foto (índice), o null si ninguno. Elegir entre opciones es más
-// confiable y rápido que nombrar libre: la respuesta es un número.
-export async function elegir(modelo, imagen, nombres) {
-  const opciones = [...nombres, 'Ninguno de estos'].map((n, i) => `${i + 1}. ${n}`).join('\n');
-  const prompt = `La foto muestra un objeto frente a una cámara. ¿Cuál de estos es?\n${opciones}\nRespondé solo con el número.`;
-  const n = Number((await pedir(modelo, prompt, imagen)).match(/\d+/)?.[0]);
-  return n >= 1 && n <= nombres.length ? n - 1 : null;
+// Cuál de los candidatos de CLIP (en su orden) es el objeto que la IA nombró libremente (índice), o null si ninguno.
+// Una pregunta de sí o no por candidato, solo con texto: con una lista para elegir, el modelo casi nunca decía
+// "ninguno" (una cámara de fotos terminaba como "Celular"). Medido con gemma3:4b en 85 fotos de objetos fuera del
+// catálogo: confirmaba alguno el 49 %, así el 25 % (cámaras: de 75 % a 0 %).
+export async function confirmar(modelo, nombreLibre, nombres) {
+  for (const [i, tipo] of nombres.entries()) {
+    const prompt = `¿Un objeto llamado "${nombreLibre}" es un "${tipo}"? Contá como sí los sinónimos y las marcas o modelos de ese tipo (por ejemplo, un "Control de Xbox" sí es un "Joystick / gamepad", un "Teclado de portátil" sí es un "Teclado" y una "Tarjeta gráfica" sí es una "Placa de video (GPU)"). Un objeto distinto, aunque se parezca o se use junto, es no (por ejemplo, una "Cámara digital" no es un "Celular" ni una "Cámara web"). Respondé solo sí o no.`;
+    if (/^\W*s[ií](?![a-záéíóúñ])/i.test(await pedir(modelo, prompt))) return i; // "sí" o "si", no "sin…"
+  }
+  return null;
 }
 
 // Qué es exactamente el objeto que CLIP ya reconoció (por ejemplo "Control de Xbox" para un joystick, o "iPhone"

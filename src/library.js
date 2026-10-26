@@ -73,9 +73,9 @@ export function borrarObjeto(lib, id) {
 
 const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
 
-// Cuando CLIP duda, la IA local elige entre sus candidatos. Medido con gemma3:4b sobre 130 fotos en las que CLIP
-// quedaba debajo de 85 %: cuando elige uno, acierta el 76 % de las veces.
-export const FIABILIDAD_IA = 0.75;
+// Cuando CLIP duda, la IA local confirma uno de sus candidatos (src/descripciones.js confirmar). Medido con gemma3:4b
+// sobre 97 fotos del catálogo en las que CLIP quedaba debajo de 85 %: cuando confirma uno, acierta el 73 %.
+export const FIABILIDAD_IA = 0.73;
 // Puntaje de un candidato que la IA confirmó: dos opiniones que coinciden (falla solo si fallan las dos).
 export const combinar = (clip, fiabilidad = FIABILIDAD_IA) => 1 - (1 - clip) * (1 - fiabilidad);
 

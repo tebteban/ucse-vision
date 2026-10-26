@@ -143,9 +143,10 @@ test('exportar e importar la biblioteca; un archivo inválido no rompe nada', as
 
 // Ollama falso: un modelo instalado y respuestas fijas en texto, como las de un modelo real; anota qué le pidió la app.
 const FICHA_IA = { resumen: 'Pastillero de prueba escrito por la IA.', detalle: 'Primer párrafo de la IA.\nSegundo párrafo de la IA.' };
-// eleccion: qué responde cuando se le pide elegir entre los candidatos de CLIP (por defecto, ninguno);
+// confirma: el tipo de objeto (un candidato de CLIP) por el que responde "sí" al preguntarle si lo que nombró es de
+// ese tipo (por defecto, ninguno);
 // especifico: qué es exactamente un objeto que CLIP ya reconoció.
-async function ollamaFalso(modelo, { vision = false, nombre = 'Pastillero violeta', eleccion = 'Ninguno de estos', especifico = 'Intel Core i7' } = {}) {
+async function ollamaFalso(modelo, { vision = false, nombre = 'Pastillero violeta', confirma = null, especifico = 'Intel Core i7' } = {}) {
   const pedidos = [];
   const servidor = http.createServer((req, res) => {
     let cuerpo = '';
@@ -158,7 +159,7 @@ async function ollamaFalso(modelo, { vision = false, nombre = 'Pastillero violet
       if (req.url === '/api/show') return res.end(JSON.stringify({ capabilities: vision ? ['completion', 'vision'] : ['completion'] }));
       if (req.url === '/api/ps') return res.end(JSON.stringify({ models: [{ name: modelo, size: 3000, size_vram: 3000 }] }));
       if (!b.prompt) return res.end('{}'); // precarga
-      const respuesta = b.prompt.includes('Ninguno de estos') ? eleccion : b.prompt.includes('Decí qué es exactamente') ? especifico : b.images ? `1. ${nombre}\n2. Electrónica` : `${FICHA_IA.resumen}\n\n${FICHA_IA.detalle.replace('\n', '\n\n')}`;
+      const respuesta = b.prompt.includes('Respondé solo sí o no') ? (b.prompt.includes(`es un "${confirma}"`) ? 'Sí' : 'No') : b.prompt.includes('Decí qué es exactamente') ? especifico : b.images ? `1. ${nombre}\n2. Electrónica` : `${FICHA_IA.resumen}\n\n${FICHA_IA.detalle.replace('\n', '\n\n')}`;
       // en vivo, como Ollama: una línea JSON por pedazo de texto
       for (const pedazo of respuesta.match(/.{1,12}/gs)) res.write(JSON.stringify({ response: pedazo, done: false }) + '\n');
       res.end(JSON.stringify({ response: '', done: true }) + '\n');
@@ -201,7 +202,8 @@ test('con Ollama, la IA escribe las descripciones a partir del nombre', async ()
 });
 
 test('con un modelo que ve imágenes: opina sobre lo que CLIP no reconoce y completa la ficha para enseñarlo', async () => {
-  const ollama = await ollamaFalso('gemma3:4b', { vision: true });
+  // después de enseñarlo, la IA reconoce al pastillero como tal (lo confirma al escribir su descripción larga)
+  const ollama = await ollamaFalso('gemma3:4b', { vision: true, especifico: 'Pastillero violeta', confirma: 'Pastillero violeta' });
   try {
     ctx = await abrirApp('nuevo', { ollama: ollama.url });
     const { page } = ctx;
@@ -210,10 +212,14 @@ test('con un modelo que ve imágenes: opina sobre lo que CLIP no reconoce y comp
     await expect(page.locator('.ficha h2')).toHaveText('No reconocido');
     await expect(page.locator('.opinion-nombre')).toHaveText('Parece: Pastillero violeta');
     await expect(page.locator('.opinion')).toContainText(FICHA_IA.resumen);
-    // una sola vez por objeto fijado, aunque CLIP lo re-identifique: elegir entre los candidatos (dijo "ninguno") y nombrarlo
+    // una sola vez por objeto fijado, aunque CLIP lo re-identifique: lo nombra mirando la foto y pregunta (solo con
+    // texto) si es alguno de los candidatos de CLIP; dijo que no a todos
     const vistas = ollama.pedidos.filter((p) => p.cuerpo.images);
-    expect(vistas).toHaveLength(2);
-    expect(vistas[0].cuerpo.prompt).toContain('Ninguno de estos');
+    expect(vistas).toHaveLength(1);
+    expect(vistas[0].cuerpo.prompt).toContain('dos líneas');
+    const preguntas = ollama.pedidos.filter((p) => p.cuerpo.prompt?.includes('Respondé solo sí o no'));
+    expect(preguntas.length).toBeGreaterThan(0);
+    expect(preguntas.every((p) => !p.cuerpo.images && p.cuerpo.prompt.includes('"Pastillero violeta" es un'))).toBe(true);
     expect(vistas[0].cuerpo.images[0].length).toBeGreaterThan(1000); // le mandó la foto del recorte
     await page.getByRole('button', { name: 'Enseñar este objeto' }).click();
     await expect(page.getByLabel('Nombre')).toHaveValue('Pastillero violeta');
@@ -228,7 +234,7 @@ test('con un modelo que ve imágenes: opina sobre lo que CLIP no reconoce y comp
     await expect(page.locator('.medidor')).toHaveText(/^Modelo entero en la GPU · última respuesta en \d+\.\d\ss$/);
     await capturarYGuardar(page);
     await page.waitForTimeout(3000); // ya reconocido por CLIP: no se le vuelve a preguntar qué es, solo se escribe su descripción larga
-    expect(ollama.pedidos.filter((p) => p.cuerpo.images)).toHaveLength(4);
+    expect(ollama.pedidos.filter((p) => p.cuerpo.images)).toHaveLength(3);
     expect(ollama.pedidos.filter((p) => p.cuerpo.prompt?.includes('Decí qué es exactamente'))).toHaveLength(1);
   } finally {
     ollama.cerrar();
@@ -236,7 +242,7 @@ test('con un modelo que ve imágenes: opina sobre lo que CLIP no reconoce y comp
 });
 
 test('cuando CLIP duda, la IA confirma un candidato y el porcentaje sube', async () => {
-  const ollama = await ollamaFalso('gemma3:4b', { vision: true, eleccion: '1' });
+  const ollama = await ollamaFalso('gemma3:4b', { vision: true, nombre: 'Intel Core i7', confirma: OBJETO.nombre });
   try {
     ctx = await abrirApp('quieto', { ollama: ollama.url });
     const { page } = ctx;
@@ -252,17 +258,60 @@ test('cuando CLIP duda, la IA confirma un candidato y el porcentaje sube', async
     const clip = await pct('.otros .otro-pct'); // la lista de candidatos sigue mostrando lo que dijo CLIP solo
     expect(clip).toBeLessThan(95);
     await expect.poll(() => pct('.rotulo em')).toBeGreaterThanOrEqual(95); // combinado: CLIP y la IA coinciden
-    const elegir = ollama.pedidos.filter((p) => p.cuerpo.prompt?.includes('Ninguno de estos'));
-    expect(elegir).toHaveLength(1);
-    expect(elegir[0].cuerpo.prompt).toContain(`1. ${OBJETO.nombre}`);
-    expect(ollama.pedidos.some((p) => p.cuerpo.prompt?.includes('dos líneas'))).toBe(false); // confirmó: no hace falta nombrarlo
+    expect(ollama.pedidos.some((p) => p.cuerpo.prompt?.includes(`"Intel Core i7" es un "${OBJETO.nombre}"`))).toBe(true);
+    // el nombre que dio al confirmarlo es el título de la descripción larga: no hace falta volver a preguntar
+    await expect(page.locator('.mas-caja h3')).toHaveText('Intel Core i7');
+    expect(ollama.pedidos.some((p) => p.cuerpo.prompt?.includes('Decí qué es exactamente'))).toBe(false);
+  } finally {
+    ollama.cerrar();
+  }
+});
+
+test('algo que no está en el catálogo (una cámara de fotos): la IA no lo confunde con un candidato y se puede enseñar', async () => {
+  const ollama = await ollamaFalso('gemma3:4b', { vision: true, nombre: 'Cámara digital' }); // no confirma ningún candidato
+  try {
+    ctx = await abrirApp('quieto', { ollama: ollama.url });
+    const { page } = ctx;
+    await esperarLista(page);
+    await page.getByRole('tab', { name: 'Biblioteca' }).click();
+    await page.getByLabel(/Umbral de reconocimiento/).fill('0.95'); // CLIP duda
+    await page.getByRole('tab', { name: 'Identificar' }).click();
+    await clicVideo(page, OBJETO.x, OBJETO.y);
+    await expect(page.locator('.opinion-nombre')).toHaveText('Parece: Cámara digital');
+    await expect(page.locator('.ficha h2')).toHaveText('No reconocido');
+    await expect(page.locator('.confirmado')).toHaveCount(0);
+    // aunque después CLIP solo lo diera por reconocido (umbral bajo), vale lo que dijo la IA para este objeto
+    await page.getByRole('tab', { name: 'Biblioteca' }).click();
+    await page.getByLabel(/Umbral de reconocimiento/).fill('0.6');
+    await page.getByRole('tab', { name: 'Identificar' }).click();
+    await page.waitForTimeout(3000); // una re-identificación
+    await expect(page.locator('.ficha h2')).toHaveText('No reconocido');
+    await page.getByRole('button', { name: 'Enseñar este objeto' }).click();
+    await expect(page.getByLabel('Nombre')).toHaveValue('Cámara digital');
+  } finally {
+    ollama.cerrar();
+  }
+});
+
+test('CLIP seguro pero la IA ve otra cosa (algo fuera del catálogo): pasa a "No reconocido" con su opinión', async () => {
+  const ollama = await ollamaFalso('gemma3:4b', { vision: true, especifico: 'Cámara digital' }); // no es un procesador
+  try {
+    ctx = await abrirApp('quieto', { ollama: ollama.url });
+    const { page } = ctx;
+    await esperarLista(page);
+    await clicVideo(page, OBJETO.x, OBJETO.y); // CLIP le da ~90 %: lo reconoce al instante, hasta que la IA opina
+    await expect(page.locator('.opinion-nombre')).toHaveText('Parece: Cámara digital');
+    await expect(page.locator('.ficha h2')).toHaveText('No reconocido');
+    expect(ollama.pedidos.some((p) => p.cuerpo.prompt?.includes(`"Cámara digital" es un "${OBJETO.nombre}"`))).toBe(true);
+    await page.getByRole('button', { name: 'Enseñar este objeto' }).click();
+    await expect(page.getByLabel('Nombre')).toHaveValue('Cámara digital');
   } finally {
     ollama.cerrar();
   }
 });
 
 test('objeto reconocido: la descripción corta es la del catálogo y la larga la escribe la IA para ese objeto', async () => {
-  const ollama = await ollamaFalso('gemma3:4b', { vision: true });
+  const ollama = await ollamaFalso('gemma3:4b', { vision: true, confirma: OBJETO.nombre }); // ve un Intel Core i7: es un procesador
   try {
     ctx = await abrirApp('quieto', { ollama: ollama.url });
     const { page } = ctx;
