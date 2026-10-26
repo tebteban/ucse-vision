@@ -115,3 +115,11 @@ export async function elegir(modelo, imagen, nombres) {
   const n = Number((await pedir(modelo, prompt, imagen)).match(/\d+/)?.[0]);
   return n >= 1 && n <= nombres.length ? n - 1 : null;
 }
+
+// Qué es exactamente el objeto que CLIP ya reconoció (por ejemplo "Control de Xbox" para un joystick, o "iPhone"
+// para un smartphone), para escribir su descripción larga; si no responde nada útil, el nombre genérico.
+export async function especificar(modelo, imagen, generico) {
+  const prompt = `La foto muestra un objeto de tipo "${generico}". Decí qué es exactamente, en español, de 1 a 5 palabras. Si se distingue la marca o el modelo (por ejemplo "Control de Xbox" o "iPhone"), incluilo; si no, respondé su nombre común. Respondé solo el nombre.`;
+  const [primera] = (await pedir(modelo, prompt, imagen)).split('\n').map(limpiar).filter(Boolean);
+  return texto(primera?.replace(/[."]+$|^"/g, ''), 120) || generico;
+}

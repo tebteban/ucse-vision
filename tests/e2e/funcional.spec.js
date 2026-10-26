@@ -143,8 +143,9 @@ test('exportar e importar la biblioteca; un archivo inválido no rompe nada', as
 
 // Ollama falso: un modelo instalado y respuestas fijas en texto, como las de un modelo real; anota qué le pidió la app.
 const FICHA_IA = { resumen: 'Pastillero de prueba escrito por la IA.', detalle: 'Primer párrafo de la IA.\nSegundo párrafo de la IA.' };
-// eleccion: qué responde cuando se le pide elegir entre los candidatos de CLIP (por defecto, ninguno).
-async function ollamaFalso(modelo, { vision = false, nombre = 'Pastillero violeta', eleccion = 'Ninguno de estos' } = {}) {
+// eleccion: qué responde cuando se le pide elegir entre los candidatos de CLIP (por defecto, ninguno);
+// especifico: qué es exactamente un objeto que CLIP ya reconoció.
+async function ollamaFalso(modelo, { vision = false, nombre = 'Pastillero violeta', eleccion = 'Ninguno de estos', especifico = 'Intel Core i7' } = {}) {
   const pedidos = [];
   const servidor = http.createServer((req, res) => {
     let cuerpo = '';
@@ -157,7 +158,7 @@ async function ollamaFalso(modelo, { vision = false, nombre = 'Pastillero violet
       if (req.url === '/api/show') return res.end(JSON.stringify({ capabilities: vision ? ['completion', 'vision'] : ['completion'] }));
       if (req.url === '/api/ps') return res.end(JSON.stringify({ models: [{ name: modelo, size: 3000, size_vram: 3000 }] }));
       if (!b.prompt) return res.end('{}'); // precarga
-      const respuesta = b.prompt.includes('Ninguno de estos') ? eleccion : b.images ? `1. ${nombre}\n2. Electrónica` : `${FICHA_IA.resumen}\n\n${FICHA_IA.detalle.replace('\n', '\n\n')}`;
+      const respuesta = b.prompt.includes('Ninguno de estos') ? eleccion : b.prompt.includes('Decí qué es exactamente') ? especifico : b.images ? `1. ${nombre}\n2. Electrónica` : `${FICHA_IA.resumen}\n\n${FICHA_IA.detalle.replace('\n', '\n\n')}`;
       // en vivo, como Ollama: una línea JSON por pedazo de texto
       for (const pedazo of respuesta.match(/.{1,12}/gs)) res.write(JSON.stringify({ response: pedazo, done: false }) + '\n');
       res.end(JSON.stringify({ response: '', done: true }) + '\n');
@@ -226,8 +227,9 @@ test('con un modelo que ve imágenes: opina sobre lo que CLIP no reconoce y comp
     // medidor para probar la PC de la facultad: todo el modelo en la GPU y cuánto tardó
     await expect(page.locator('.medidor')).toHaveText(/^Modelo entero en la GPU · última respuesta en \d+\.\d\ss$/);
     await capturarYGuardar(page);
-    await page.waitForTimeout(3000); // ya reconocido por CLIP: no se le vuelve a preguntar a la IA
-    expect(ollama.pedidos.filter((p) => p.cuerpo.images)).toHaveLength(3);
+    await page.waitForTimeout(3000); // ya reconocido por CLIP: no se le vuelve a preguntar qué es, solo se escribe su descripción larga
+    expect(ollama.pedidos.filter((p) => p.cuerpo.images)).toHaveLength(4);
+    expect(ollama.pedidos.filter((p) => p.cuerpo.prompt?.includes('Decí qué es exactamente'))).toHaveLength(1);
   } finally {
     ollama.cerrar();
   }
@@ -253,7 +255,27 @@ test('cuando CLIP duda, la IA confirma un candidato y el porcentaje sube', async
     const elegir = ollama.pedidos.filter((p) => p.cuerpo.prompt?.includes('Ninguno de estos'));
     expect(elegir).toHaveLength(1);
     expect(elegir[0].cuerpo.prompt).toContain(`1. ${OBJETO.nombre}`);
-    expect(ollama.pedidos.filter((p) => p.cuerpo.images)).toHaveLength(1); // confirmó: no hace falta nombrarlo
+    expect(ollama.pedidos.some((p) => p.cuerpo.prompt?.includes('dos líneas'))).toBe(false); // confirmó: no hace falta nombrarlo
+  } finally {
+    ollama.cerrar();
+  }
+});
+
+test('objeto reconocido: la descripción corta es la del catálogo y la larga la escribe la IA para ese objeto', async () => {
+  const ollama = await ollamaFalso('gemma3:4b', { vision: true });
+  try {
+    ctx = await abrirApp('quieto', { ollama: ollama.url });
+    const { page } = ctx;
+    await esperarLista(page);
+    await clicVideo(page, OBJETO.x, OBJETO.y);
+    await expect(page.locator('.ficha h2')).toHaveText(OBJETO.nombre);
+    await expect(page.locator('.ficha .lead')).toHaveText(FICHA.resumen); // corta: genérica, del catálogo
+    await expect(page.locator('.mas-caja h3')).toHaveText('Intel Core i7'); // larga: qué es exactamente
+    await expect(page.locator('.escrito-ia')).toHaveText('Escrito por la IA para este objeto');
+    await expect(page.locator('.mas-caja p')).toHaveText(['Primer párrafo de la IA.', 'Segundo párrafo de la IA.']);
+    const pedido = ollama.pedidos.find((p) => p.cuerpo.prompt?.includes('Decí qué es exactamente'));
+    expect(pedido.cuerpo.prompt).toContain(`"${OBJETO.nombre}"`);
+    expect(ollama.pedidos.some((p) => p.cuerpo.prompt?.startsWith('Sos docente') && p.cuerpo.prompt.includes('Objeto: Intel Core i7'))).toBe(true);
   } finally {
     ollama.cerrar();
   }

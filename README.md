@@ -28,6 +28,10 @@ muestras). Todo está en `src/descripciones.js`:
   - cuando CLIP duda (queda debajo del umbral), la IA elige cuál de sus 4 candidatos es. Si elige uno, se muestra
     como reconocido con un porcentaje combinado, `1 − (1 − CLIP) × (1 − 0,75)`, y la marca "Confirmado por la IA".
     El 0,75 es lo que acierta gemma3:4b cuando elige (`FIABILIDAD_IA` en `src/library.js`): un 80 % de CLIP pasa a 95 %;
+  - con el objeto reconocido, la descripción corta es la del catálogo (genérica) y la larga la escribe la IA en el
+    momento para ese objeto en particular: primero dice qué es exactamente ("Control de Xbox", "iPhone") y después
+    escribe dos párrafos, con la marca "Escrito por la IA para este objeto". Sin IA que vea imágenes, o si falla,
+    queda la del catálogo;
   - si la IA dice que no es ninguno, da su opinión ("Parece: …") y "Enseñar este objeto" abre el formulario ya
     completo;
   - en Enseñar, "Mirar el objeto" completa nombre, categoría y descripciones desde la cámara.

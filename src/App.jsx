@@ -7,7 +7,7 @@ import {
 import { loadEmbedder, cropToCanvas, embed, reconocimientoOcupado, _matarReconocimiento } from './embedder.js';
 import { cargarSam, analizarEscena, recortesEn, alCambiarDispositivo, alPerderEscena, _matarSegmentacion, _analizarImagen } from './segmentador.js';
 import { elegirRecorte, siguienteRecorte } from './recorte.js';
-import { modeloDisponible, precargar, enGPU, describir, nombrar, elegir } from './descripciones.js';
+import { modeloDisponible, precargar, enGPU, describir, nombrar, elegir, especificar } from './descripciones.js';
 import { crearSeguidor, soltarSeguidor } from './seguidor.js';
 import { diferencia, diferenciaLocal, MINI_W, MINI_H } from './seguimiento.js';
 import { loadLibrary, saveLibrary, normalizar, match, efectiva, soloCategoria, restaurarBase, borrarObjeto, baseIds, combinar } from './library.js';
@@ -127,6 +127,7 @@ export default function App() {
   const [porBorrar, setPorBorrar] = useState(null);
   const [llm, setLlm] = useState(null); // {nombre, vision} del modelo de Ollama que ayuda, o null si no hay
   const [opinion, setOpinion] = useState(null); // {n, ficha, listo, error}: qué dice la IA del objeto fijado n que CLIP no reconoció
+  const [larga, setLarga] = useState(null); // {n, id, nombre, detalle, listo, error}: descripción larga que escribe la IA para el objeto fijado n
   const [ia, setIa] = useState({ s: 0, gpu: null }); // medidor: segundos de la última respuesta completa y % del modelo en la GPU
   const [escribiendo, setEscribiendo] = useState(false);
   const escribiendoRef = useRef(false); // el blur del nombre y el clic del botón llegan juntos
@@ -717,6 +718,32 @@ export default function App() {
     });
   }, [noReconocido, llm, fijado, opinion, res, ejemploDe, medirIA]);
   const sugerida = opinionActual?.ficha; // la ficha que propuso la IA (a medio escribir hasta que listo)
+
+  // Objeto reconocido y modelo que ve imágenes: la descripción larga la escribe la IA para este objeto en particular
+  // (primero qué es exactamente, por ejemplo "Control de Xbox", después dos párrafos que aparecen mientras se
+  // escriben). La corta sigue siendo la del catálogo. Una vez por objeto fijado.
+  const reconocidoAhora = tab === 'identificar' && fijado && !perdido && reconocido;
+  const objetoActual = actual?.objeto;
+  useEffect(() => {
+    if (!reconocidoAhora || !llm?.vision || larga?.n === fijado.n || !cajaRef.current) return;
+    const { n } = fijado;
+    const o = objetoActual;
+    const t0 = performance.now();
+    const poner = (cambios) => setLarga((l) => (l?.n === n ? { ...l, ...cambios } : l));
+    setLarga({ n, id: o.id });
+    (async () => {
+      const nombre = await especificar(llm.nombre, fotoDe(videoRef.current, cajaRef.current), o.nombre);
+      poner({ nombre });
+      const f = await describir(llm.nombre, nombre, o.categoria, ejemploDe(o.categoria), (p) => poner({ detalle: p.detalle }));
+      poner({ detalle: f.detalle, listo: true });
+      medirIA(t0);
+    })().catch((e) => {
+      console.error('Descripción larga con IA:', e);
+      poner({ error: true }); // queda la del catálogo
+    });
+  }, [reconocidoAhora, llm, fijado, larga, objetoActual, ejemploDe, medirIA]);
+  // la de este objeto fijado y del objeto que se está mostrando (si se elige otro candidato de la lista, la del catálogo)
+  const largaActual = larga && fijado && larga.n === fijado.n && larga.id === actual?.objeto.id && !larga.error ? larga : null;
   const mostrarResumen = fijado && !perdido && tab === 'identificar' && reconocido;
   const splash = splashMin || modelo === 'cargando' || estadoCam === 'iniciando';
   const esperandoEscena = analizando || escena === 'sin';
@@ -1001,8 +1028,22 @@ export default function App() {
                               {verMas && (
                                 <motion.div className="mas" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.3, ease: SUAVE }}>
                                   <div className="mas-caja">
-                                    <h3>Más información</h3>
-                                    {parrafos(actual.objeto.detalle || SIN_DETALLE).map((p, i) => <p key={i}>{p}</p>)}
+                                    {largaActual ? (
+                                      <>
+                                        <h3>{largaActual.nombre ?? 'Más información'}</h3>
+                                        <span className="escrito-ia"><Sparkles size={14} aria-hidden="true" /> Escrito por la IA para este objeto</span>
+                                        {largaActual.detalle ? (
+                                          parrafos(largaActual.detalle).map((p, i) => <p key={i}>{p}</p>)
+                                        ) : (
+                                          <p><Loader2 size={14} className="giro" aria-hidden="true" /> {largaActual.nombre ? 'Escribiendo…' : 'Mirando el objeto…'}</p>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <>
+                                        <h3>Más información</h3>
+                                        {parrafos(actual.objeto.detalle || SIN_DETALLE).map((p, i) => <p key={i}>{p}</p>)}
+                                      </>
+                                    )}
                                   </div>
                                 </motion.div>
                               )}

@@ -149,7 +149,8 @@ button.estado:hover { background: var(--pressed); }
 .ficha { display: flex; flex-direction: column; gap: 16px; }
 .ficha-cabeza { display: flex; align-items: center; gap: 16px; }
 .eyebrow { display: block; font-size: 12px; line-height: 20px; font-weight: 500; text-transform: uppercase; color: var(--body); }
-.confirmado { display: inline-flex; align-items: center; gap: 4px; margin-top: 2px; font-size: 13px; line-height: 18px; font-weight: 600; color: var(--ink); }
+.confirmado, .escrito-ia { display: inline-flex; align-items: center; gap: 4px; margin-top: 2px; font-size: 13px; line-height: 18px; font-weight: 600; color: var(--ink); }
+.escrito-ia { margin: -4px 0 8px; font-size: 12px; font-weight: 500; color: var(--body); }
 .ficha h2 { font-size: 32px; line-height: 40px; }
 .lead { font-size: 18px; line-height: 26px; font-weight: 400; }
 .anillo { position: relative; flex: none; }

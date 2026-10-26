@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { modeloDisponible, enGPU, describir, nombrar, elegir, separarFicha } from '../../src/descripciones.js';
+import { modeloDisponible, enGPU, describir, nombrar, elegir, especificar, separarFicha } from '../../src/descripciones.js';
 import { combinar } from '../../src/library.js';
 
 // Respuesta de /api/generate como la manda Ollama: una línea JSON por pedazo de texto. cortes: en cuántos pedazos de
 // bytes llega (para probar líneas partidas entre dos pedazos).
 function enVivo(texto, cortes = 1) {
-  const lineas = texto.match(/.{1,7}/gs).map((t) => JSON.stringify({ response: t, done: false }) + '\n').join('') + JSON.stringify({ response: '', done: true }) + '\n';
+  const lineas = (texto.match(/.{1,7}/gs) ?? []).map((t) => JSON.stringify({ response: t, done: false }) + '\n').join('') + JSON.stringify({ response: '', done: true }) + '\n';
   const n = Math.ceil(lineas.length / cortes);
   const pedazos = Array.from({ length: cortes }, (_, i) => lineas.slice(i * n, (i + 1) * n));
   return new Response(new ReadableStream({ start(c) { pedazos.forEach((p) => c.enqueue(new TextEncoder().encode(p))); c.close(); } }));
@@ -134,5 +134,21 @@ describe('combinar (porcentaje cuando la IA confirma)', () => {
     expect(combinar(0.6, 0.75)).toBeCloseTo(0.9);
     expect(combinar(0.8, 0)).toBeCloseTo(0.8); // una IA que no sabe nada no cambia nada
     expect(combinar(0.9)).toBeGreaterThan(0.9);
+  });
+});
+
+describe('especificar (qué es exactamente lo que CLIP reconoció)', () => {
+  it('devuelve el nombre específico que ve la IA, con el genérico en el pedido', async () => {
+    ollama({ generate: () => enVivo('Control de Xbox.') });
+    expect(await especificar('gemma3:4b', 'QUJD', 'Joystick / Gamepad')).toBe('Control de Xbox');
+    const pedido = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(pedido.images).toEqual(['QUJD']);
+    expect(pedido.prompt).toContain('"Joystick / Gamepad"');
+  });
+  it('saca rótulos y comillas, y usa el genérico si no responde nada', async () => {
+    ollama({ generate: () => enVivo('**Nombre:** "iPhone"') });
+    expect(await especificar('m', 'x', 'Smartphone')).toBe('iPhone');
+    ollama({ generate: () => enVivo('') });
+    expect(await especificar('m', 'x', 'Smartphone')).toBe('Smartphone');
   });
 });
