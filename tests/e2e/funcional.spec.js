@@ -5,9 +5,11 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import catalogo from '../../src/data/catalogo.json' with { type: 'json' };
-import { abrirApp, esperarLista, clicVideo, arrastrarVideo, ARDUINO, ARDUINO_CHICO } from './app.js';
+import semilla from '../../src/data/semilla.json' with { type: 'json' };
+import { abrirApp, esperarLista, clicVideo, arrastrarVideo, OBJETO, ARDUINO_CHICO } from './app.js';
 
-const ARDUINO_FICHA = catalogo.find((o) => o.id === 'arduino');
+const FICHA = catalogo.find((o) => o.id === OBJETO.id);
+const MUESTRAS_BASE = String(semilla.filter((m) => m.id === OBJETO.id).length);
 // El objeto sintético de la escena "nuevo" ocupa x 490-790, y 210-510 de un cuadro de 1280×720.
 const NUEVO = { a: [470 / 1280, 195 / 720], b: [810 / 1280, 525 / 720], centro: [0.5, 0.5] };
 
@@ -22,7 +24,7 @@ test('arranca, carga modelos y muestra el catálogo completo', async () => {
   ctx = await abrirApp('quieto');
   const { page } = ctx;
   await esperarLista(page);
-  await expect(page.locator('.stat').first()).toContainText('43');
+  await expect(page.locator('.stat').first()).toContainText(String(catalogo.length));
   await expect(page.locator('.flotante').first()).toHaveText(/En vivo/);
   await expect(page.locator('.espera h2')).toHaveText('Apuntá y hacé clic');
 });
@@ -31,15 +33,15 @@ test('clic sobre el objeto: recuadro, nombre, descripción corta y larga', async
   ctx = await abrirApp('quieto');
   const { page } = ctx;
   await esperarLista(page);
-  await clicVideo(page, ARDUINO.x, ARDUINO.y);
+  await clicVideo(page, OBJETO.x, OBJETO.y);
   // sobre la cámara: nombre, % y descripción corta
-  await expect(page.locator('.rotulo b')).toHaveText('Placa Arduino');
-  await expect(page.locator('.rotulo-resumen')).toHaveText(ARDUINO_FICHA.resumen);
+  await expect(page.locator('.rotulo b')).toHaveText(OBJETO.nombre);
+  await expect(page.locator('.rotulo-resumen')).toHaveText(FICHA.resumen);
   // en el panel: descripción corta y larga (abierta por defecto)
-  await expect(page.locator('.ficha h2')).toHaveText('Placa Arduino');
-  await expect(page.locator('.ficha .eyebrow')).toHaveText('Electrónica');
-  await expect(page.locator('.ficha .lead')).toHaveText(ARDUINO_FICHA.resumen);
-  const [p1, p2] = ARDUINO_FICHA.detalle.split('\n');
+  await expect(page.locator('.ficha h2')).toHaveText(OBJETO.nombre);
+  await expect(page.locator('.ficha .eyebrow')).toHaveText('Informática');
+  await expect(page.locator('.ficha .lead')).toHaveText(FICHA.resumen);
+  const [p1, p2] = FICHA.detalle.split('\n');
   await expect(page.locator('.mas-caja p').first()).toHaveText(p1);
   await expect(page.locator('.mas-caja p').nth(1)).toHaveText(p2);
   // se puede ocultar y volver a abrir tocando la tarjeta sobre el objeto
@@ -58,21 +60,20 @@ test('encuadre manual arrastrando el mouse', async () => {
   const { page } = ctx;
   await esperarLista(page, { escena: false });
   await arrastrarVideo(page, [0.33, 0.22], [0.67, 0.78]);
-  await expect(page.locator('.ficha h2')).toHaveText('Placa Arduino');
+  await expect(page.locator('.ficha h2')).toHaveText(OBJETO.nombre);
 });
 
-test('el filtro de categoría cambia lo que se puede reconocer', async () => {
+test('filtro de categoría: Informática tiene todo el catálogo y Electrónica queda para más adelante', async () => {
   ctx = await abrirApp('quieto');
   const { page } = ctx;
   await esperarLista(page);
-  await clicVideo(page, ARDUINO.x, ARDUINO.y);
-  await expect(page.locator('.ficha h2')).toHaveText('Placa Arduino');
+  await clicVideo(page, OBJETO.x, OBJETO.y);
+  await expect(page.locator('.ficha h2')).toHaveText(OBJETO.nombre);
   await page.getByRole('button', { name: 'Informática', exact: true }).click();
-  await expect(page.locator('.ficha h2')).not.toHaveText('Placa Arduino');
-  await expect(page.locator('.stat').first()).toContainText('28');
-  await page.getByRole('button', { name: 'Electrónica', exact: true }).click();
-  await expect(page.locator('.ficha h2')).toHaveText('Placa Arduino');
-  await expect(page.locator('.stat').first()).toContainText('15');
+  await expect(page.locator('.ficha h2')).toHaveText(OBJETO.nombre);
+  await expect(page.locator('.stat').first()).toContainText(String(catalogo.length));
+  // sin objetos de Electrónica en el catálogo, su botón queda desactivado hasta que se enseñe uno
+  await expect(page.getByRole('button', { name: 'Electrónica', exact: true })).toBeDisabled();
 });
 
 test('enseñar un objeto nuevo en vivo, reconocerlo y que persista al reiniciar', async () => {
@@ -234,19 +235,19 @@ test('borrar muestras pide confirmación y "Muestras base" las restaura', async 
   const { page } = ctx;
   await esperarLista(page);
   await page.getByRole('tab', { name: 'Biblioteca' }).click();
-  const fila = page.locator('.tabla-fila', { hasText: 'Placa Arduino' });
-  await expect(fila.locator('.cnt')).toHaveText('24');
+  const fila = page.locator('.tabla-fila', { hasText: OBJETO.nombre });
+  await expect(fila.locator('.cnt')).toHaveText(MUESTRAS_BASE);
   await fila.getByRole('button', { name: /Borrar muestras/ }).click();
-  await expect(fila.locator('.cnt')).toHaveText('24'); // primer toque: solo pide confirmación
+  await expect(fila.locator('.cnt')).toHaveText(MUESTRAS_BASE); // primer toque: solo pide confirmación
   await fila.getByRole('button', { name: /Confirmar/ }).click();
   await expect(fila.locator('.cnt')).toHaveText('0');
-  // sin muestras, el Arduino ya no se reconoce como Arduino
+  // sin muestras, el objeto ya no se reconoce
   await page.getByRole('tab', { name: 'Identificar' }).click();
-  await clicVideo(page, ARDUINO.x, ARDUINO.y);
-  await expect(page.locator('.ficha h2')).not.toHaveText('Placa Arduino');
+  await clicVideo(page, OBJETO.x, OBJETO.y);
+  await expect(page.locator('.ficha h2')).not.toHaveText(OBJETO.nombre);
   await page.getByRole('tab', { name: 'Biblioteca' }).click();
   await page.getByRole('button', { name: 'Muestras base' }).click();
-  await expect(page.locator('.tabla-fila', { hasText: 'Placa Arduino' }).locator('.cnt')).toHaveText('24');
+  await expect(page.locator('.tabla-fila', { hasText: OBJETO.nombre }).locator('.cnt')).toHaveText(MUESTRAS_BASE);
 });
 
 test('clic sobre una escena vacía: avisa o marca "No reconocido" sin romperse', async () => {

@@ -1,7 +1,7 @@
 # UCSE Vision
 
 Reconocimiento de objetos con la cámara, pensado como una "Pokédex" universitaria por carreras
-(hoy: Informática y Electrónica). Se hace clic sobre un objeto, el sistema lo recorta, lo sigue y muestra
+(hoy: Informática; Electrónica vuelve más adelante). Se hace clic sobre un objeto, el sistema lo recorta, lo sigue y muestra
 su ficha con una descripción corta y una larga. Se pueden enseñar objetos nuevos en vivo, con unas pocas
 muestras de la cámara y sin reentrenar la red. Todo corre local, sin internet.
 
@@ -12,7 +12,7 @@ muestras de la cámara y sin reentrenar la red. Todo corre local, sin internet.
 | Reconocimiento | CLIP (ViT-B/32 cuantizado) convierte el recorte en un vector y se compara con las muestras de la biblioteca | `src/clip.worker.js`, `src/library.js` |
 | Selección por clic | SlimSAM segmenta el objeto bajo el clic; analiza la escena en segundo plano | `src/sam.worker.js`, `src/segmentador.js` |
 | Seguimiento | Coincidencia de plantilla sobre cuadros reducidos | `src/seguimiento.js`, `src/seguidor.worker.js` |
-| Biblioteca | 43 fichas + 952 muestras base incluidas; lo propio se guarda en la PC y se puede exportar | `src/data/`, `src/library.js` |
+| Biblioteca | 28 fichas + 2600 muestras base incluidas (hasta 100 fotos por objeto); lo propio se guarda en la PC y se puede exportar | `src/data/`, `src/library.js` |
 
 Los tres modelos corren en Web Workers, así la interfaz y la cámara nunca se traban. La app de escritorio se sirve
 desde `app://` con la página aislada (COOP/COEP): eso permite que la segmentación use varios núcleos de la CPU
@@ -68,6 +68,12 @@ y un perfil temporal, así nunca tocan la biblioteca real. Resultados de la últ
 ## Regenerar las muestras base
 
 ```bash
-node scripts/descargar-fotos.mjs 30   # fotos de Wikimedia Commons en datos/ (no se versionan)
-node scripts/construir-semilla.mjs    # filtra con CLIP y escribe src/data/semilla.json
+node scripts/descargar-fotos.mjs 150  # hasta 150 fotos por objeto de Wikimedia Commons en datos/ (no se versionan)
+node scripts/construir-semilla.mjs    # filtra con CLIP, deja hasta 100 por objeto en src/data/semilla.json
+node scripts/evaluar-base.mjs         # mide cuánto reconoce la base con fotos que no conoce
 ```
+
+**Fotos propias:** las que saques vos (por ejemplo con el celular, al objeto real sobre una mesa) van en
+`datos/propias/<id>/` (el id del objeto en `src/data/catalogo.json`, por ejemplo `datos/propias/cpu/`). La descarga
+no toca esa carpeta, y `construir-semilla.mjs` las conserva siempre y antes que las de internet. Son las que más
+ayudan, porque se parecen a lo que ve la cámara en la demo.

@@ -1,6 +1,6 @@
 // Pruebas de tolerancia a fallos: la app tiene que recuperarse sola de cada problema y seguir funcionando.
 import { test, expect } from '@playwright/test';
-import { abrirApp, esperarLista, clicVideo, ARDUINO } from './app.js';
+import { abrirApp, esperarLista, clicVideo, OBJETO } from './app.js';
 
 let ctx;
 test.afterEach(async () => {
@@ -8,11 +8,11 @@ test.afterEach(async () => {
   ctx = null;
 });
 
-// La prueba final de cada caso: un clic identifica el Arduino.
-async function identificaArduino(page) {
+// La prueba final de cada caso: un clic identifica el objeto.
+async function identificaObjeto(page) {
   if (await page.locator('.marco').count()) await page.getByRole('button', { name: 'Soltar objeto' }).click();
-  await clicVideo(page, ARDUINO.x, ARDUINO.y);
-  await expect(page.locator('.ficha h2')).toHaveText('Placa Arduino', { timeout: 60_000 });
+  await clicVideo(page, OBJETO.x, OBJETO.y);
+  await expect(page.locator('.ficha h2')).toHaveText(OBJETO.nombre, { timeout: 60_000 });
 }
 
 test('la cámara se desconecta y la app se reconecta sola', async () => {
@@ -30,7 +30,7 @@ test('la cámara se desconecta y la app se reconecta sola', async () => {
   await expect(page.locator('.cam-error')).toHaveCount(0, { timeout: 15_000 });
   await expect(page.locator('.flotante').first()).toHaveText(/En vivo/);
   await esperarLista(page);
-  await identificaArduino(page);
+  await identificaObjeto(page);
 });
 
 test('el botón "Reintentar ahora" reabre la cámara sin esperar', async () => {
@@ -44,7 +44,7 @@ test('el botón "Reintentar ahora" reabre la cámara sin esperar', async () => {
   });
   await page.getByRole('button', { name: 'Reintentar ahora' }).click();
   await expect(page.locator('.cam-error')).toHaveCount(0, { timeout: 10_000 });
-  await identificaArduino(page);
+  await identificaObjeto(page);
 });
 
 test('el proceso de reconocimiento se cae y se reinicia solo', async () => {
@@ -52,13 +52,14 @@ test('el proceso de reconocimiento se cae y se reinicia solo', async () => {
   const { page } = ctx;
   await esperarLista(page);
   await page.evaluate(() => window.__ucse.matarReconocimiento());
-  await identificaArduino(page);
+  await identificaObjeto(page);
   // caída en medio de una identificación: avisa, no se cuelga, y el siguiente intento funciona
   await page.getByRole('button', { name: 'Soltar objeto' }).click();
-  await clicVideo(page, ARDUINO.x, ARDUINO.y);
+  await clicVideo(page, OBJETO.x, OBJETO.y);
   await page.evaluate(() => window.__ucse.matarReconocimiento());
-  await expect(page.locator('.rotulo b')).toHaveText(/Placa Arduino|Reintentando…/, { timeout: 30_000 });
-  await identificaArduino(page);
+  await expect.poll(() => page.locator('.rotulo b').innerText(), { timeout: 30_000 }).toMatch(/^(Procesador \(CPU\)|Reintentando…)$/);
+  expect(OBJETO.nombre).toBe('Procesador (CPU)'); // el patrón de arriba lo nombra tal cual (tiene paréntesis)
+  await identificaObjeto(page);
 });
 
 test('el proceso de segmentación se cae y el clic se resuelve igual', async () => {
@@ -66,7 +67,7 @@ test('el proceso de segmentación se cae y el clic se resuelve igual', async () 
   const { page } = ctx;
   await esperarLista(page);
   await page.evaluate(() => window.__ucse.matarSegmentacion());
-  await identificaArduino(page); // re-analiza la escena y reintenta el clic sin intervención
+  await identificaObjeto(page); // re-analiza la escena y reintenta el clic sin intervención
 });
 
 test('la página se cae y Electron la recarga', async () => {
@@ -89,8 +90,8 @@ test('la página se cae y Electron la recarga', async () => {
     const wc = BrowserWindow.getAllWindows()[0].webContents;
     wc.sendInputEvent({ type: 'mouseDown', x: p.x, y: p.y, button: 'left', clickCount: 1 });
     wc.sendInputEvent({ type: 'mouseUp', x: p.x, y: p.y, button: 'left', clickCount: 1 });
-  }, { x: Math.round(r.x + r.w * ARDUINO.x), y: Math.round(r.y + r.h * ARDUINO.y) });
-  await expect.poll(() => enPagina(`document.querySelector('.ficha h2')?.innerText`), { timeout: 60_000 }).toBe('Placa Arduino');
+  }, { x: Math.round(r.x + r.w * OBJETO.x), y: Math.round(r.y + r.h * OBJETO.y) });
+  await expect.poll(() => enPagina(`document.querySelector('.ficha h2')?.innerText`), { timeout: 60_000 }).toBe(OBJETO.nombre);
 });
 
 test('almacenamiento lleno: avisa y el objeto enseñado igual se puede usar', async () => {
@@ -102,15 +103,15 @@ test('almacenamiento lleno: avisa y el objeto enseñado igual se puede usar', as
       throw new DOMException('lleno', 'QuotaExceededError');
     };
   });
-  await clicVideo(page, ARDUINO.x, ARDUINO.y);
+  await clicVideo(page, OBJETO.x, OBJETO.y);
   await expect(page.locator('.marco')).toHaveCount(1);
   await page.getByRole('tab', { name: 'Enseñar' }).click();
-  await page.getByLabel('Nombre').fill('Arduino de prueba');
+  await page.getByLabel('Nombre').fill('Objeto de prueba');
   await page.getByRole('button', { name: /Ráfaga/ }).click();
   await expect(page.locator('.minis img')).toHaveCount(8, { timeout: 60_000 });
   await page.getByRole('button', { name: 'Guardar y reconocer' }).click();
   await expect(page.locator('.toast', { hasText: /No se pudo guardar/ })).toBeVisible();
-  await expect(page.locator('.ficha h2')).toHaveText('Arduino de prueba');
+  await expect(page.locator('.ficha h2')).toHaveText('Objeto de prueba');
 });
 
 test('un error inesperado no tumba la app', async () => {
@@ -124,5 +125,5 @@ test('un error inesperado no tumba la app', async () => {
     Promise.reject(new Error('promesa rechazada por la prueba'));
   });
   await expect(page.locator('.toast', { hasText: /error inesperado/ })).toBeVisible();
-  await identificaArduino(page);
+  await identificaObjeto(page);
 });

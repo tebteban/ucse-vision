@@ -70,8 +70,10 @@ describe('biblioteca efectiva', () => {
     expect(lib.muestras).toEqual([]);
   });
   it('filtra por categoría', () => {
-    const e = soloCategoria(efectiva(vacia), 'Electrónica');
-    expect(e.objetos.every((o) => o.categoria === 'Electrónica')).toBe(true);
+    const mio = { objetos: [{ id: 'mio', nombre: 'Mío', categoria: 'Electrónica', resumen: 'r', detalle: 'd' }], muestras: [{ id: 'mio', v: vec(3) }], sinBase: [] };
+    const e = soloCategoria(efectiva(mio), 'Informática');
+    expect(e.objetos.every((o) => o.categoria === 'Informática')).toBe(true);
+    expect(e.muestras.some((m) => m.id === 'mio')).toBe(false); // el objeto de Electrónica enseñado queda afuera
     const ids = new Set(e.objetos.map((o) => o.id));
     expect(e.muestras.every((m) => ids.has(m.id))).toBe(true);
     expect(soloCategoria(efectiva(vacia), '').objetos).toHaveLength(catalogo.length);
@@ -91,8 +93,8 @@ describe('match', () => {
   });
   it('una muestra base de un objeto se reconoce a sí misma primero', () => {
     const e = efectiva(vacia);
-    const m = semilla.find((x) => x.id === 'arduino');
-    expect(match(e, m.v)[0].objeto.id).toBe('arduino');
+    const m = semilla.find((x) => x.id === 'cpu');
+    expect(match(e, m.v)[0].objeto.id).toBe('cpu');
   });
 });
 

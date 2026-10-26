@@ -726,13 +726,16 @@ export default function App() {
             <strong>UCSE Vision</strong>
           </div>
           <nav className="cats" aria-label="Categorías">
-            {CATEGORIAS.map(([k, n, Icono]) => (
-              <button key={n} className={categoria === k ? 'chip on' : 'chip'} aria-pressed={categoria === k} onClick={() => setCategoria(k)}>
-                {categoria === k && <motion.span layoutId="chip-ind" className="chip-ind" transition={{ type: 'spring', stiffness: 420, damping: 36 }} />}
-                <Icono size={16} aria-hidden="true" />
-                <span>{n}</span>
-              </button>
-            ))}
+            {CATEGORIAS.map(([k, n, Icono]) => {
+              const vacia = k && !base.objetos.some((o) => o.categoria === k); // sin objetos todavía: se activa al enseñarle uno
+              return (
+                <button key={n} className={vacia ? 'chip pronto' : categoria === k ? 'chip on' : 'chip'} disabled={vacia} title={vacia ? 'Próximamente' : undefined} aria-pressed={categoria === k} onClick={() => setCategoria(k)}>
+                  {categoria === k && <motion.span layoutId="chip-ind" className="chip-ind" transition={{ type: 'spring', stiffness: 420, damping: 36 }} />}
+                  <Icono size={16} aria-hidden="true" />
+                  <span>{n}</span>
+                </button>
+              );
+            })}
             <span className="cats-sep" aria-hidden="true" />
             {PROXIMAMENTE.map(([n, Icono]) => (
               <button key={n} className="chip pronto" disabled title="Próximamente">

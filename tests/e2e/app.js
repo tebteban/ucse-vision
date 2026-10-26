@@ -61,9 +61,11 @@ export async function arrastrarVideo(page, [x0, y0], [x1, y1]) {
   await page.mouse.up();
 }
 
-// Posición del Arduino en las escenas "quieto" y "movil" (centro del cuadro, ver tests/fixtures/generar.mjs).
-export const ARDUINO = { x: 0.5, y: (170 + 190) / 720 };
-// Escena "chico": Arduino de 110 px sobre una alfombrilla que toca el borde (en px del cuadro de 1280×720).
+// Objeto de las escenas "quieto" y "movil" (centro del cuadro, ver tests/fixtures/generar.mjs): una foto que no está
+// entre las muestras base (tests/fixtures/objeto.jpg), para probar el reconocimiento como con la cámara.
+export const OBJETO = { x: 0.5, y: (170 + 190) / 720, id: 'cpu', nombre: 'Procesador (CPU)' };
+// Escena "chico": una placa de 110 px sobre una alfombrilla que toca el borde (en px del cuadro de 1280×720). Solo
+// prueba el recorte, no el reconocimiento: usa la foto del Arduino (tests/fixtures/arduino.jpg).
 export const ARDUINO_CHICO = { x: 640 - 55, y: 435, w: 110, h: 110 };
 
 // --- métricas de fluidez ---

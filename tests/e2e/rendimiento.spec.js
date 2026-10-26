@@ -1,7 +1,7 @@
 // Escenarios de rendimiento: miden fluidez de cámara e interfaz y latencias. Cada uno se repite UCSE_REPS veces
 // (3 por defecto) con la app recién abierta, y guarda los números en tests/.tmp/resultados.json.
 import { test, expect } from '@playwright/test';
-import { abrirApp, esperarLista, clicVideo, iniciarMedicion, terminarMedicion, guardarResultado, ARDUINO } from './app.js';
+import { abrirApp, esperarLista, clicVideo, iniciarMedicion, terminarMedicion, guardarResultado, OBJETO } from './app.js';
 
 const REPS = +(process.env.UCSE_REPS ?? 3);
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -50,7 +50,7 @@ test('reposo: cámara sin interacción', async () => {
 test('identificar: clic sobre el objeto y ficha', async () => {
   await escenario('identificar', 'quieto', async (page) => {
     await iniciarMedicion(page);
-    const lat = await clicYFicha(page, ARDUINO.x, ARDUINO.y);
+    const lat = await clicYFicha(page, OBJETO.x, OBJETO.y);
     const reconocido = await page.locator('.ficha h2').textContent();
     await espera(8_000); // incluye las re-identificaciones periódicas
     return { ...lat, reconocido, ...(await terminarMedicion(page)) };
@@ -60,7 +60,7 @@ test('identificar: clic sobre el objeto y ficha', async () => {
 test('seguimiento: objeto en movimiento durante 15 s', async () => {
   await escenario('seguimiento', 'movil', async (page) => {
     await iniciarMedicion(page);
-    const lat = await clicYFicha(page, 0.5, ARDUINO.y);
+    const lat = await clicYFicha(page, 0.5, OBJETO.y);
     let perdido = 0;
     for (let s = 0; s < 15; s++) {
       await espera(1000);
@@ -72,7 +72,7 @@ test('seguimiento: objeto en movimiento durante 15 s', async () => {
 
 test('ráfaga: 8 muestras en Enseñar', async () => {
   await escenario('rafaga', 'quieto', async (page) => {
-    await clicVideo(page, ARDUINO.x, ARDUINO.y);
+    await clicVideo(page, OBJETO.x, OBJETO.y);
     await expect(page.locator('.marco')).toHaveCount(1, { timeout: 30_000 });
     await page.getByRole('tab', { name: 'Enseñar' }).click();
     await iniciarMedicion(page);
@@ -90,7 +90,7 @@ test('clics en movimiento: 4 selecciones seguidas con la escena cambiando', asyn
     await iniciarMedicion(page);
     const lats = [];
     for (let k = 0; k < 4; k++) {
-      lats.push((await clicYFicha(page, 0.5, ARDUINO.y)).fichaMs);
+      lats.push((await clicYFicha(page, 0.5, OBJETO.y)).fichaMs);
       await page.getByRole('button', { name: 'Soltar objeto' }).click();
       await espera(1500);
     }
